@@ -1,10 +1,19 @@
 import streamlit as st
 import sqlite3
 import json
-from datetime import datetime, date
+from datetime import datetime, timezone, timedelta
 import pandas as pd
 import os
 import time
+
+# ----------------- TIMEZONE CONFIG (NEPAL TIME UTC+5:45) -----------------
+NEPAL_TZ = timezone(timedelta(hours=5, minutes=45))
+
+def get_nepal_now():
+    return datetime.now(NEPAL_TZ)
+
+def get_today_nepal_str():
+    return get_nepal_now().strftime("%Y-%m-%d")
 
 # ----------------- PAGE CONFIG -----------------
 st.set_page_config(
@@ -30,6 +39,18 @@ CUSTOM_CSS = """
         font-size: 2.2rem;
         font-weight: 800;
         margin-bottom: 0.2rem;
+    }
+    
+    .clock-badge {
+        background: #0f172a;
+        color: #38bdf8;
+        padding: 6px 14px;
+        border-radius: 9999px;
+        font-size: 0.82rem;
+        font-weight: 700;
+        display: inline-block;
+        margin-bottom: 12px;
+        border: 1px solid #1e293b;
     }
     
     .question-card {
@@ -124,14 +145,13 @@ st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
 
 DB_FILE = "loksewa_agri_exams.db"
 
-# ----------------- SAFE DATABASE ACCESS HELPER -----------------
+# ----------------- DATABASE HELPERS -----------------
 def get_db():
     conn = sqlite3.connect(DB_FILE, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     return conn
 
 def safe_get(row, key, default=None):
-    """Safely access a column from sqlite3.Row without throwing IndexError"""
     try:
         if key in row.keys():
             val = row[key]
@@ -175,7 +195,7 @@ def init_db():
             )
         ''')
 
-        # Auto-migration: Ensure all columns exist in existing SQLite databases
+        # Auto-migration for schema changes
         cursor.execute("PRAGMA table_info(questions)")
         existing_cols = [r[1] for r in cursor.fetchall()]
         
@@ -212,172 +232,221 @@ def init_db():
 
 init_db()
 
-# ----------------- SEED COMPLETE 100-QUESTION EXAM -----------------
-def seed_sample_exam():
+# ----------------- ANTI-REPETITION PAST TOPIC EXTRACTOR -----------------
+def get_recent_question_stems(limit=150):
     with get_db() as conn:
         cursor = conn.cursor()
-        today_str = str(date.today())
-        cursor.execute("SELECT id FROM exams WHERE exam_date = ?", (today_str,))
-        if cursor.fetchone():
-            return
+        rows = cursor.execute("SELECT question_text FROM questions ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+        stems = [r[0][:45] for r in rows if r[0]]
+        return stems
 
+# ----------------- ROTATIONAL TOPIC MATRIX -----------------
+def get_daily_topic_focus():
+    weekday = get_nepal_now().weekday()
+    # Rotates core topics across 7 days to eliminate repetition
+    matrix = {
+        0: { # Monday
+            "gk": "Nepal Demography (Census 2078), Physical Geography (Lakes, Glaciers, Mountain passes), UN & BIMSTEC",
+            "agri_a": "History of Agri Extension (DoA, NARC mandate), Agri Education (AFU, IAAS), ADS Pillar 1 (Governance)",
+            "agri_b": "Cereal Agronomy (Paddy & Maize SRI, biofortification, hybrid seed rate), IPNS & Urea calculation"
+        },
+        1: { # Tuesday
+            "gk": "Constitution of Nepal (Fundamental rights, Directive principles, Schedules 5, 6, 7, 8, 9)",
+            "agri_a": "Plant Protection Act 2064, Pesticide Management Act 2076, Banned pesticides (26 banned active ingredients)",
+            "agri_b": "Horticulture: Olericulture, Potato late blight & wart disease, Physiological disorders (Whiptail, Browning, Buttoning)"
+        },
+        2: { # Wednesday
+            "gk": "16th Periodic Plan (2081/82-2085/86 targets & strategies), Fiscal Budgeting & Accounting",
+            "agri_a": "Right to Food and Food Sovereignty Act 2076, National Seed Policy 2056, WTO SPS Agreement",
+            "agri_b": "Soil Science: Soil reaction (pH), Lime requirement calculation, Cation Exchange Capacity (CEC), Phosphorus fixation"
+        },
+        3: { # Thursday
+            "gk": "Civil Service Act 2049 & Rules 2050 (Leave, Pension, Conduct), Good Governance Act 2064",
+            "agri_a": "Natural Resource Conservation, Climate Change adaptation (NAPA, LAPA), GLOF & Disaster management",
+            "agri_b": "Entomology: Invasive pests (Fall Armyworm, Tuta absoluta), ETL, Biopesticides, Honeybee castes & pollination"
+        },
+        4: { # Friday
+            "gk": "Management principles (POSDCORB, Motivation theories, Leadership, Public Policy formulation)",
+            "agri_a": "Agro-forestry policy, Crop Insurance policy (80% premium subsidy), Agricultural Projects planning",
+            "agri_b": "Pomology & Fruit processing, Pruning/training, Postharvest curing/blanching, Hermetic storage moisture limits"
+        },
+        5: { # Saturday
+            "gk": "Comprehensive Federal & Province Past Questions: Nepal History (Lichhavi, Malla, Shah) & Contemporary Affairs",
+            "agri_a": "ADS 20-year roadmap (Productivity & Commercialization targets), National Seed Vision 2013-2025",
+            "agri_b": "Cash crops (Tea, Coffee, Cardamom, Ginger), Seed quality testing (Tetrazolium, purity), Land Equivalent Ratio (LER)"
+        },
+        6: { # Sunday
+            "gk": "Sustainable Development Goals (SDGs 1, 2, 13), National Parks & Biodiversity Conservation",
+            "agri_a": "Extension teaching methods (FFS, Result demonstration, Method demonstration), Participatory Planning (PRA)",
+            "agri_b": "Plant Pathology (Bacterial blight, Clubroot, Rusts), Agricultural Marketing & Monopsony structures"
+        }
+    }
+    return matrix.get(weekday, matrix[0])
+
+# ----------------- 4-BATCH 100-QUESTION GROQ ENGINE -----------------
+def generate_full_100_exam(client, target_date_str, title_str):
+    past_stems = get_recent_question_stems(limit=100)
+    avoid_snippet = ("\nCRITICAL: AVOID repeating these recently asked question stems/topics:\n- " + "\n- ".join(past_stems[:35])) if past_stems else ""
+    focus = get_daily_topic_focus()
+
+    batches = [
+        # Batch 1: 25 GK
+        {
+            "category": "GK",
+            "prompt": f"""
+            You are the chief examiner for Nepal Loksewa Agriculture 7th Level (Gazetted 3rd Class).
+            Generate exactly 25 General Awareness (GK) MCQs for the exam date: {target_date_str}.
+            Today's Primary Focus: {focus['gk']}.
+            {avoid_snippet}
+            
+            Strictly adhere to Nepal PSC Section Officer syllabus:
+            - Physical/Demographic Geography (Census 2078)
+            - Constitution of Nepal (Articles 36, 42, Schedules 5-9)
+            - 16th Periodic Plan targets
+            - Civil Service Act 2049, Governance, Budgeting
+            
+            Every question must have:
+            - 'exam_place' tag (e.g. 'Federal PSC 2080', 'Bagmati PSC 2081', 'Koshi PSC 2080', 'Lumbini PSC 2079', 'CARE Model Exam', 'Himalayan Institute')
+            - 'is_figure_option': 0
+            - 'figure_svg': null
+            Language: Nepali (Unicode).
+            
+            Respond ONLY with a valid JSON array of 25 objects numbered 1 to 25:
+            [
+              {{
+                "q_num": 1, "category": "GK", "exam_place": "Federal PSC 2080", "is_figure_option": 0,
+                "question_text": "...", "figure_svg": null,
+                "option_a": "...", "option_b": "...", "option_c": "...", "option_d": "...",
+                "correct_option": "A", "explanation": "...",
+                "option_hints": {{"B": "why B is wrong", "C": "...", "D": "..."}}
+              }}
+            ]
+            """
+        },
+        # Batch 2: 25 IQ (with 8 Non-Verbal SVG Figure Option Questions)
+        {
+            "category": "IQ",
+            "prompt": f"""
+            Generate exactly 25 Loksewa Aptitude / IQ questions (numbered 26 to 50):
+            - Q26 to Q42 (17 Verbal/Numerical Qs): Time & work, series, coding-decoding, blood relations, ratio, profit & loss. ('is_figure_option': 0).
+            - Q43 to Q50 (8 Non-Verbal Spatial Qs): MUST HAVE FIGURE OPTIONS!
+              For Q43 to Q50:
+              - 'is_figure_option': 1
+              - 'figure_svg': Inline SVG code for the Problem Figure (width 220, height 70)
+              - 'option_a', 'option_b', 'option_c', 'option_d': Inline SVG code for each of the 4 answer figures (width 70, height 60)
+            
+            Respond ONLY with a valid JSON array of 25 objects numbered 26 to 50.
+            """
+        },
+        # Batch 3: 25 Agriculture Part A (Policies, Extension, Environment)
+        {
+            "category": "Agri",
+            "prompt": f"""
+            Generate exactly 25 Technical Agriculture questions (numbered 51 to 75) for 7th Level Officer:
+            Today's Primary Focus: {focus['agri_a']}.
+            {avoid_snippet}
+            
+            Topics:
+            - History of Agriculture in Nepal, DoA, NARC vision
+            - Agri Extension systems (T&V, FFS, AKC, Pluralistic extension)
+            - ADS (2015-2035) 4 pillars, governance indicators
+            - Seeds Act 2045 & Rules 2069, Pesticides Act 2076, Plant Protection Act 2064
+            - Right to Food & Food Sovereignty Act 2076, WTO SPS Agreement, Climate change mitigation
+            
+            Every question must have 'option_hints' explaining the other options. 'is_figure_option': 0.
+            Language: English.
+            Respond ONLY with a valid JSON array of 25 objects numbered 51 to 75.
+            """
+        },
+        # Batch 4: 25 Agriculture Part B (Core Agronomy, Soil, Horticulture, Protection)
+        {
+            "category": "Agri",
+            "prompt": f"""
+            Generate exactly 25 Technical Agriculture questions (numbered 76 to 100) for 7th Level Officer:
+            Today's Primary Focus: {focus['agri_b']}.
+            {avoid_snippet}
+            
+            Topics:
+            - Agronomy: Seed certification classes (Breeder, Foundation, Certified, Improved tags), isolation distances
+            - Horticulture: Vegetable disorders, fruit propagation (grafting/budding), postharvest blanching
+            - Soil Science: IPNM, Soil reaction (pH), fertilizer active ingredients, nutrient deficiency symptoms
+            - Plant Protection: Major insect pests (Fall Armyworm, stem borers), diseases (Late blight, BLB, Clubroot), ETL
+            - Farm Management, Land Equivalent Ratio (LER), market structures (Monopoly, Monopsony)
+            
+            Every question must have 'option_hints' explaining why the incorrect options are wrong. 'is_figure_option': 0.
+            Language: English.
+            Respond ONLY with a valid JSON array of 25 objects numbered 76 to 100.
+            """
+        }
+    ]
+
+    all_100 = []
+    for b in batches:
+        comp = client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[{"role": "user", "content": b["prompt"]}],
+            response_format={"type": "json_object"}
+        )
+        content = comp.choices[0].message.content
+        data = json.loads(content)
+        q_list = data if isinstance(data, list) else data.get("questions", list(data.values())[0])
+        all_100.extend(q_list)
+        time.sleep(0.4)
+
+    # Save to SQLite by Date
+    with get_db() as conn:
+        cursor = conn.cursor()
         cursor.execute(
-            "INSERT INTO exams (exam_date, title, total_questions) VALUES (?, ?, ?)",
-            (today_str, f"Daily 100-Question Exam Set - {today_str}", 100)
+            "INSERT OR REPLACE INTO exams (exam_date, title, total_questions) VALUES (?, ?, ?)",
+            (target_date_str, title_str, len(all_100))
         )
         exam_id = cursor.lastrowid
 
-        qs = []
-
-        # 1. GENERAL AWARENESS (Q1 to Q25)
-        for i in range(1, 26):
-            if i == 1:
-                qs.append((
-                    exam_id, 1, "GK", "Federal PSC 2080", 0,
-                    "नेपालको वर्तमान संविधानको कुन धारामा 'खाद्य सम्बन्धी हक' (खाद्य सम्प्रभुता) को मौलिक हक सुनिश्चित गरिएको छ?",
-                    None, "धारा ३३", "धारा ३५", "धारा ३६", "धारा ४०", "C",
-                    "धारा ३६ मा प्रत्येक नागरिकलाई खाद्य सम्बन्धी हक, खाद्यवस्तुको अभावमा जीवन जोखिममा नपर्ने हक तथा खाद्य सम्प्रभुताको हक प्रत्याभूत गरिएको छ।",
-                    json.dumps({"A": "धारा ३३: रोजगारीको हक", "B": "धारा ३५: स्वास्थ्य सम्बन्धी हक", "D": "धारा ४०: दलितको हक"})
-                ))
-            elif i == 2:
-                qs.append((
-                    exam_id, 2, "GK", "Bagmati PSC 2081", 0,
-                    "नेपाल सरकारको १६ औं आवधिक योजना (२०८१/८२-२०८५/८६) को मुख्य राष्ट्रिय सोच (Vision) के हो?",
-                    None, "समृद्ध नेपाल, सुखी नेपाली", "सुशासन, सामाजिक न्याय र समृद्धि", "समाजवाद उन्मुख स्वाधीन अर्थतन्त्र", "दिगो विकास र गरिबी निवारण", "B",
-                    "१६ औं आवधिक योजनाको सोच 'सुशासन, सामाजिक न्याय र समृद्धि' तय गरिएको छ।",
-                    json.dumps({"A": "यो १५ औं योजनाको २५ वर्षे दीर्घकालीन सोच हो।", "C": "संविधानको निर्देशक सिद्धान्तको अंश हो।", "D": "सामान्य विकास लक्ष्य हो।"})
-                ))
-            elif i == 3:
-                qs.append((
-                    exam_id, 3, "GK", "Federal PSC 2079", 0,
-                    "नेपालको संविधानको अनुसूची ९ मा कुन विषय उल्लेख गरिएको छ?",
-                    None, "संघको अधिकारको सूची", "प्रदेशको अधिकारको सूची", "स्थानीय तहको अधिकारको सूची", "संघ, प्रदेश र स्थानीय तहको साझा अधिकारको सूची", "D",
-                    "अनुसूची ९ मा तीनवटै तह (संघ, प्रदेश र स्थानीय तह) को साझा अधिकार सूची उल्लेख छ।",
-                    json.dumps({"A": "अनुसूची ५ मा संघको एकल अधिकार छ।", "B": "अनुसूची ६ मा प्रदेशको एकल अधिकार छ।", "C": "अनुसूची ८ मा स्थानीय तहको एकल अधिकार छ।"})
-                ))
-            else:
-                qs.append((
-                    exam_id, i, "GK", "Federal & Province PSC", 0,
-                    f"नेपालको भूगोल, शासन प्रणाली तथा समसामयिक सन्दर्भ सम्बन्धी वस्तुगत प्रश्न नं. {i}: तलका मध्ये कुन तथ्य सही छ?",
-                    None, "नेपालमा ७५३ स्थानीय तह छन्।", "नेपालमा ७७ प्रदेशहरू छन्।", "नेपालमा ४० वटा मन्त्रालय छन्।", "नेपालको संविधानमा ५० वटा अनुसूची छन्।", "A",
-                    "नेपालको संघीय संरचनामा ७ प्रदेश र ७५३ स्थानीय तह (गाउँपालिका/नगरपालिका) छन्।",
-                    json.dumps({"B": "प्रदेश संख्या ७ मात्र हो।", "C": "संघीय मन्त्रालयको संख्या २५ मा सीमित छ।", "D": "संविधानमा ९ वटा अनुसूची मात्र छन्।"})
-                ))
-
-        # 2. GENERAL REASONING / IQ (Q26 to Q50)
-        for i in range(26, 51):
-            if 43 <= i <= 50:
-                # Non-verbal questions with SVG options
-                q_fig = """<svg width="220" height="70" style="background:#ffffff; border:1.5px solid #cbd5e1; border-radius:8px;">
-                    <rect x="20" y="20" width="30" height="30" fill="none" stroke="#2563eb" stroke-width="3"/>
-                    <text x="65" y="42" font-size="20" fill="#64748b">→</text>
-                    <rect x="90" y="20" width="30" height="30" fill="none" stroke="#2563eb" stroke-width="3"/>
-                    <line x1="90" y1="20" x2="120" y2="50" stroke="#dc2626" stroke-width="3"/>
-                    <text x="135" y="42" font-size="20" fill="#64748b">::</text>
-                    <circle cx="175" cy="35" r="16" fill="none" stroke="#2563eb" stroke-width="3"/>
-                    <text x="200" y="42" font-size="22" font-weight="bold" fill="#dc2626">?</text>
-                </svg>"""
-                opt_a = """<svg width="70" height="60"><circle cx="35" cy="30" r="16" fill="none" stroke="#2563eb" stroke-width="3"/><line x1="22" y1="18" x2="48" y2="42" stroke="#dc2626" stroke-width="3"/></svg>"""
-                opt_b = """<svg width="70" height="60"><circle cx="35" cy="30" r="16" fill="none" stroke="#2563eb" stroke-width="3"/><circle cx="35" cy="30" r="6" fill="#dc2626"/></svg>"""
-                opt_c = """<svg width="70" height="60"><rect x="20" y="15" width="30" height="30" fill="#2563eb"/></svg>"""
-                opt_d = """<svg width="70" height="60"><circle cx="35" cy="30" r="16" fill="none" stroke="#2563eb" stroke-width="3"/><line x1="35" y1="14" x2="35" y2="46" stroke="#000" stroke-width="2"/></svg>"""
-
-                qs.append((
-                    exam_id, i, "IQ", "Federal PSC 2080", 1,
-                    f"[Non-Verbal Spatial IQ #{i}] Analyze the relationship in the problem figure and choose the matching Answer Figure:",
-                    q_fig, opt_a, opt_b, opt_c, opt_d, "A",
-                    "A diagonal line cuts across the initial geometric shape. Applying this rule to the circle results in Option (A).",
-                    json.dumps({"B": "Adding an inner dot is a different transformation rule.", "C": "Solid fill does not follow the initial relationship.", "D": "Vertical bisector changes symmetry direction."})
-                ))
-            else:
-                qs.append((
-                    exam_id, i, "IQ", "Federal PSC 2079", 0,
-                    f"Logical / Numerical Reasoning Question #{i}: If 6 agri-technicians can survey 6 hectares of land in 6 days, how many days will 1 technician take to survey 1 hectare?",
-                    None, "1 day", "6 days", "12 days", "36 days", "B",
-                    "Formula: (M1 * D1)/W1 = (M2 * D2)/W2 => (6 * 6)/6 = (1 * D2)/1 => D2 = 6 days.",
-                    json.dumps({"A": "Common misconception assuming 1 unit corresponds linearly to 1 day.", "C": "Calculation error.", "D": "Inversion error."})
-                ))
-
-        # 3. TECHNICAL AGRICULTURE (Q51 to Q100)
-        for i in range(51, 101):
-            if i == 51:
-                qs.append((
-                    exam_id, 51, "Agri", "Federal PSC 2078", 0,
-                    "The 20-year Agriculture Development Strategy (ADS, 2015-2035) of Nepal has identified how many core strategic pillars/components?",
-                    None, "3 Pillars", "4 Pillars", "5 Pillars", "8 Pillars", "B",
-                    "ADS operates on 4 core strategic pillars: Governance, Productivity, Commercialization, and Competitiveness.",
-                    json.dumps({
-                        "A": "3 is incorrect; ADS has 4 distinct pillars.",
-                        "C": "5 denotes monitoring indicators and priority commodities.",
-                        "D": "8 corresponds to core flagship outcomes, not strategic pillars."
-                    })
-                ))
-            elif i == 52:
-                qs.append((
-                    exam_id, 52, "Agri", "Bagmati PSC 2081", 0,
-                    "Which physiological disorder of cauliflower is caused by the deficiency of Molybdenum (Mo) in acidic soils?",
-                    None, "Browning", "Whiptail", "Buttoning", "Black heart", "B",
-                    "Whiptail in Brassicas is caused by Molybdenum deficiency under acidic soil pH conditions.",
-                    json.dumps({
-                        "A": "Browning in cauliflower is caused by Boron (B) deficiency.",
-                        "C": "Buttoning is caused by severe Nitrogen deficiency or using over-aged nursery seedlings.",
-                        "D": "Black heart is a Calcium deficiency disorder common in celery and potato."
-                    })
-                ))
-            elif i == 53:
-                qs.append((
-                    exam_id, 53, "Agri", "Lumbini PSC 2080", 0,
-                    "What is the official seed certification tag color for 'Foundation Seed' (आधारभूत बीउ) in Nepal?",
-                    None, "Yellow Tag", "White Tag", "Blue Tag", "Green Tag", "B",
-                    "Foundation Seed is designated with an official White tag in Nepal.",
-                    json.dumps({
-                        "A": "Yellow Tag: Used exclusively for Breeder Seed (प्रजनक बीउ).",
-                        "C": "Blue Tag: Used for Certified Seed (प्रमाणित बीउ).",
-                        "D": "Green Tag: Used for Improved Seed (उन्नत बीउ)."
-                    })
-                ))
-            elif i == 54:
-                qs.append((
-                    exam_id, 54, "Agri", "Federal PSC 2079", 0,
-                    "What is the recommended isolation distance for producing Certified Seed of Hybrid Maize in Nepal?",
-                    None, "50 meters", "100 meters", "200 meters", "400 meters", "C",
-                    "Certified hybrid maize seed production requires at least 200 m isolation distance.",
-                    json.dumps({
-                        "A": "50 meters is insufficient for wind-pollinated crops like maize.",
-                        "B": "100 meters is for certified self-pollinated crops or varieties.",
-                        "D": "400 meters is the isolation distance required for Foundation seed of hybrid maize."
-                    })
-                ))
-            else:
-                qs.append((
-                    exam_id, i, "Agri", "Federal & Province PSC", 0,
-                    f"Agricultural Technology & Science Model Question #{i}: What is the primary objective of Integrated Plant Nutrient Management (IPNM)?",
-                    None,
-                    "Complete prohibition of all mineral chemical fertilizers.",
-                    "Judicious and balanced combination of organic manures, bio-fertilizers, and chemical fertilizers.",
-                    "Applying single heavy-dose nitrogen fertilizer during vegetative growth only.",
-                    "Exclusive dependence on green manuring without soil testing.",
-                    "B",
-                    "IPNM optimizes crop yields while maintaining long-term soil health through balanced integrated inputs.",
-                    json.dumps({
-                        "A": "Complete prohibition is Organic farming, not IPNM.",
-                        "C": "Single heavy doses cause nitrogen leaching, volatilization, and soil acidification.",
-                        "D": "Soil testing is the fundamental prerequisite of IPNM."
-                    })
-                ))
-
-        cursor.executemany('''
-            INSERT INTO questions 
-            (exam_id, q_num, category, exam_place, is_figure_option, question_text, figure_svg, option_a, option_b, option_c, option_d, correct_option, explanation, option_hints)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ''', qs)
+        for q in all_100:
+            cursor.execute('''
+                INSERT INTO questions 
+                (exam_id, q_num, category, exam_place, is_figure_option, question_text, figure_svg, option_a, option_b, option_c, option_d, correct_option, explanation, option_hints)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (
+                exam_id, q['q_num'], q.get('category', 'Agri'), q.get('exam_place', 'Nepal PSC Model'),
+                q.get('is_figure_option', 0), q['question_text'], q.get('figure_svg'),
+                q['option_a'], q['option_b'], q['option_c'], q['option_d'],
+                q['correct_option'], q['explanation'], json.dumps(q.get('option_hints', {}))
+            ))
         conn.commit()
 
-seed_sample_exam()
+    return len(all_100)
+
+# ----------------- MIDNIGHT 12:00 AM AUTO-CHECK & GENERATION -----------------
+def auto_check_and_generate_midnight_exam():
+    """
+    Checks if today's date (Nepal Time) exists in SQLite.
+    If it's past 12:00 AM and no exam exists, automatically calls Groq to generate it.
+    """
+    today_nepal = get_today_nepal_str()
+    with get_db() as conn:
+        existing = conn.execute("SELECT id FROM exams WHERE exam_date = ?", (today_nepal,)).fetchone()
+        
+    if not existing:
+        # Retrieve API key from Streamlit Secrets or Environment
+        api_key = st.secrets.get("GROQ_API_KEY", os.environ.get("GROQ_API_KEY", ""))
+        if api_key:
+            try:
+                from groq import Groq
+                client = Groq(api_key=api_key)
+                title = f"Agriculture 7th Level Daily Exam - {today_nepal}"
+                generate_full_100_exam(client, today_nepal, title)
+            except Exception as e:
+                print(f"Auto midnight generation error: {e}")
+
+auto_check_and_generate_midnight_exam()
 
 # ----------------- SIDEBAR -----------------
 st.sidebar.markdown("<h2 style='color:#10b981; margin-bottom:0;'>🌱 AgriLoksewa 7th</h2>", unsafe_allow_html=True)
 st.sidebar.caption("Nepal Agriculture Service (Gazetted 3rd Class / 7th Level)")
+
+nepal_clock = get_nepal_now().strftime("%Y-%m-%d | %I:%M %p")
+st.sidebar.markdown(f"<div class='clock-badge'>🕒 Nepal: {nepal_clock}</div>", unsafe_allow_html=True)
 st.sidebar.divider()
 
 menu = st.sidebar.radio(
@@ -390,16 +459,16 @@ menu = st.sidebar.radio(
 # =======================================================
 if menu == "📝 Attempt 100-Question Exam":
     st.markdown('<div class="main-title">📝 Daily 100-Question Model Exam</div>', unsafe_allow_html=True)
-    st.caption("Strict Blueprint: 25 GK + 25 IQ + 50 Agriculture | Negative Marking: 20% (-0.2 marks)")
+    st.caption("Auto-resets at 12:00 AM Daily | 25 GK + 25 IQ + 50 Agriculture | 20% Negative Marking")
 
     with get_db() as conn:
         exams = conn.execute("SELECT * FROM exams ORDER BY exam_date DESC").fetchall()
 
     if not exams:
-        st.warning("No exams available. Go to the Generator tab to generate one!")
+        st.warning("⚠️ Today's exam has not been generated yet. Please visit the '⚡ 100-Question Daily Generator' tab to generate today's set.")
         st.stop()
 
-    exam_map = {f"{e['exam_date']} - {e['title']}": e['id'] for e in exams}
+    exam_map = {f"{e['exam_date']} - {e['title']} ({e['total_questions']} Qs)": e['id'] for e in exams}
     selected_label = st.selectbox("Select Exam Date:", list(exam_map.keys()))
     selected_exam_id = exam_map[selected_label]
 
@@ -410,16 +479,15 @@ if menu == "📝 Attempt 100-Question Exam":
         ).fetchall()
 
     if not questions:
-        st.error("No questions found.")
+        st.error("No questions found for this date.")
         st.stop()
 
-    # Session State Answers (None initially = unattempted)
     if f"user_ans_{selected_exam_id}" not in st.session_state:
         st.session_state[f"user_ans_{selected_exam_id}"] = {q['q_num']: None for q in questions}
 
     # Top Status Bar
     c1, c2, c3, c4 = st.columns(4)
-    c1.markdown("<div style='background:#f1f5f9; padding:10px; border-radius:8px; text-align:center;'><b>Total Questions:</b> 100</div>", unsafe_allow_html=True)
+    c1.markdown(f"<div style='background:#f1f5f9; padding:10px; border-radius:8px; text-align:center;'><b>Total Questions:</b> {len(questions)}</div>", unsafe_allow_html=True)
     c2.markdown("<div style='background:#fef3c7; padding:10px; border-radius:8px; text-align:center;'><b>Time:</b> 90 Minutes</div>", unsafe_allow_html=True)
     c3.markdown("<div style='background:#fee2e2; padding:10px; border-radius:8px; text-align:center;'><b>Negative Mark:</b> -0.2 (20%)</div>", unsafe_allow_html=True)
     c4.markdown("<div style='background:#ecfdf5; padding:10px; border-radius:8px; text-align:center;'><b>Passing Mark:</b> 45.0</div>", unsafe_allow_html=True)
@@ -437,7 +505,7 @@ if menu == "📝 Attempt 100-Question Exam":
         is_done = st.session_state[f"user_ans_{selected_exam_id}"][q_no] is not None
         col.caption(f"{'🟢' if is_done else '⚪'} {q_no}")
 
-    # Exam Form
+    # Exam Form (No pre-selected options, no 'Skip' item)
     with st.form(key=f"exam_form_{selected_exam_id}"):
         for q in questions:
             q_num = q['q_num']
@@ -445,7 +513,6 @@ if menu == "📝 Attempt 100-Question Exam":
             exam_place = safe_get(q, 'exam_place', 'Loksewa Model')
             badge_class = "badge-gk" if cat == "GK" else ("badge-iq" if cat == "IQ" else "badge-agri")
 
-            # Question Header Card
             st.markdown(f"""
             <div class="question-card">
                 <div>
@@ -456,7 +523,6 @@ if menu == "📝 Attempt 100-Question Exam":
             </div>
             """, unsafe_allow_html=True)
 
-            # Main Figure SVG
             fig_svg = safe_get(q, 'figure_svg')
             if fig_svg:
                 st.components.v1.html(fig_svg, height=85)
@@ -464,7 +530,7 @@ if menu == "📝 Attempt 100-Question Exam":
             current_choice = st.session_state[f"user_ans_{selected_exam_id}"].get(q_num, None)
             is_fig_opt = bool(safe_get(q, 'is_figure_option', 0))
 
-            # CASE 1: Non-Verbal IQ with FIGURE OPTIONS (None selected initially)
+            # Non-Verbal IQ (Figure Options)
             if is_fig_opt:
                 st.markdown("**Select from the Answer Figures below:**")
                 colA, colB, colC, colD = st.columns(4)
@@ -489,9 +555,7 @@ if menu == "📝 Attempt 100-Question Exam":
                     st.components.v1.html(q['option_d'], height=70)
                     st.markdown('</div>', unsafe_allow_html=True)
 
-                # Strictly options A, B, C, D with index=None if not yet marked
                 idx_val = ["A", "B", "C", "D"].index(current_choice) if current_choice in ["A", "B", "C", "D"] else None
-
                 chosen = st.radio(
                     label=f"Answer for Q{q_num}",
                     options=["A", "B", "C", "D"],
@@ -502,7 +566,7 @@ if menu == "📝 Attempt 100-Question Exam":
                 )
                 st.session_state[f"user_ans_{selected_exam_id}"][q_num] = chosen
 
-            # CASE 2: Text Options (None selected initially)
+            # Text Options
             else:
                 opts = {"A": q['option_a'], "B": q['option_b'], "C": q['option_c'], "D": q['option_d']}
                 idx_val = ["A", "B", "C", "D"].index(current_choice) if current_choice in ["A", "B", "C", "D"] else None
@@ -544,7 +608,7 @@ if menu == "📝 Attempt 100-Question Exam":
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ''', (
                     selected_exam_id,
-                    datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    get_nepal_now().strftime("%Y-%m-%d %H:%M:%S"),
                     (correct_cnt + wrong_cnt),
                     correct_cnt,
                     wrong_cnt,
@@ -705,13 +769,17 @@ elif menu == "📊 Score History & Analytics":
 # =======================================================
 elif menu == "⚡ 100-Question Daily Generator":
     st.markdown('<div class="main-title">⚡ 100-Question Daily Generator</div>', unsafe_allow_html=True)
-    st.caption("Generates 100 questions (25 GK + 25 IQ with SVG Non-Verbal Figures + 50 Agri Technical) in 4 parallel batches.")
+    st.caption("Automatic at 12:00 AM Daily | Manual Generation Available Below")
 
-    api_key = st.text_input("Enter Groq API Key:", type="password", value=os.environ.get("GROQ_API_KEY", ""))
-    target_dt = st.date_input("Exam Date:", value=date.today())
+    today_str = get_today_nepal_str()
+    st.info(f"📅 Today's Date (Nepal Time): **{today_str}** | Resets every midnight automatically.")
+
+    saved_key = st.secrets.get("GROQ_API_KEY", os.environ.get("GROQ_API_KEY", ""))
+    api_key = st.text_input("Groq API Key:", type="password", value=saved_key)
+    target_dt = st.date_input("Target Exam Date:", value=get_nepal_now().date())
     target_title = st.text_input("Exam Title:", value=f"Loksewa Krishi Adhikrit 7th Level - {target_dt}")
 
-    if st.button("🚀 Generate Fresh 100-Question Exam Set", type="primary"):
+    if st.button("🚀 Generate / Refresh 100-Question Exam Set", type="primary"):
         if not api_key:
             st.error("Please provide a Groq API Key.")
             st.stop()
@@ -719,97 +787,14 @@ elif menu == "⚡ 100-Question Daily Generator":
         from groq import Groq
         groq_client = Groq(api_key=api_key)
 
-        batches = [
-            # Batch 1: 25 GK
-            {
-                "category": "GK",
-                "prompt": f"""
-                Generate 25 Loksewa Agriculture 7th Level General Awareness (GK) questions in JSON.
-                Topics: Geography of Nepal (Census 2078), Constitution (Articles 36, Part 1-5, Schedules), 16th Plan targets, Civil Service Act 2049, Governance, Budget, SDGs.
-                Language: Nepali.
-                Include 'exam_place' tag (e.g. 'Federal PSC 2080', 'Bagmati PSC 2081').
-                Format: JSON array of 25 objects:
-                [{{"q_num": 1, "category": "GK", "exam_place": "Federal PSC 2080", "is_figure_option": 0, "question_text": "...", "figure_svg": null, "option_a": "...", "option_b": "...", "option_c": "...", "option_d": "...", "correct_option": "A", "explanation": "...", "option_hints": {{"B":"note","C":"note","D":"note"}}}}]
-                Number strictly from 1 to 25.
-                """
-            },
-            # Batch 2: 25 IQ with Non-Verbal Figure Options
-            {
-                "category": "IQ",
-                "prompt": f"""
-                Generate 25 Loksewa IQ questions (numbered 26 to 50):
-                - Q26-Q42: Verbal and Numerical reasoning. is_figure_option: 0.
-                - Q43-Q50: NON-VERBAL SPATIAL REASONING WITH FIGURE OPTIONS! 
-                  For Q43-Q50:
-                  - set "is_figure_option": 1
-                  - "figure_svg": Inline SVG code for the Problem Figure (width 220, height 70)
-                  - "option_a", "option_b", "option_c", "option_d": Inline SVG code for each of the 4 answer figures (width 70, height 60)!
-                Format: JSON array of 25 objects numbered 26 to 50.
-                """
-            },
-            # Batch 3: 25 Agri Part A
-            {
-                "category": "Agri",
-                "prompt": f"""
-                Generate 25 Technical Agriculture questions (numbered 51 to 75) for 7th Level Officer:
-                Topics: History of DoA/NARC, Extension (FFS, T&V, AKC), ADS 2015-2035 (4 pillars, targets), Seeds Act 2045, Pesticides Act 2076, WTO SPS.
-                Language: English.
-                Provide informative 'option_hints' for all incorrect options. is_figure_option: 0.
-                Format: JSON array of 25 objects numbered 51 to 75.
-                """
-            },
-            # Batch 4: 25 Agri Part B
-            {
-                "category": "Agri",
-                "prompt": f"""
-                Generate 25 Technical Agriculture questions (numbered 76 to 100):
-                Topics: Agronomy (seed classes, tags, isolation distance), Horticulture (disorders, grafting), Soil (pH, IPNM, NPK), Plant Protection (Fall armyworm, Late blight, ETL), Postharvest.
-                Language: English.
-                Provide informative 'option_hints' for all incorrect options. is_figure_option: 0.
-                Format: JSON array of 25 objects numbered 76 to 100.
-                """
-            }
-        ]
-
-        all_qs = []
-        progress = st.progress(0, text="Starting 4-batch generation pipeline...")
+        progress = st.progress(0, text="Initiating Anti-Repetition 4-Batch Pipeline...")
 
         try:
-            with st.spinner("Generating 100 questions with SVG figure options..."):
-                for idx, b in enumerate(batches):
-                    progress.progress((idx + 1) * 25, text=f"Generating Batch {idx+1}/4 ({b['category']})...")
-                    comp = groq_client.chat.completions.create(
-                        model="llama-3.3-70b-versatile",
-                        messages=[{"role": "user", "content": b["prompt"]}],
-                        response_format={"type": "json_object"}
-                    )
-                    data = json.loads(comp.choices[0].message.content)
-                    q_list = data if isinstance(data, list) else data.get("questions", list(data.values())[0])
-                    all_qs.extend(q_list)
-                    time.sleep(0.5)
+            with st.spinner("Generating 100 non-repeating questions with SVG figures..."):
+                total_generated = generate_full_100_exam(groq_client, str(target_dt), target_title)
+                progress.progress(100, text="Complete!")
 
-                with get_db() as conn:
-                    cursor = conn.cursor()
-                    cursor.execute(
-                        "INSERT OR REPLACE INTO exams (exam_date, title, total_questions) VALUES (?, ?, ?)",
-                        (str(target_dt), target_title, len(all_qs))
-                    )
-                    exam_id = cursor.lastrowid
-
-                    for q in all_qs:
-                        cursor.execute('''
-                            INSERT INTO questions 
-                            (exam_id, q_num, category, exam_place, is_figure_option, question_text, figure_svg, option_a, option_b, option_c, option_d, correct_option, explanation, option_hints)
-                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        ''', (
-                            exam_id, q['q_num'], q.get('category', 'Agri'), q.get('exam_place', 'Model PSC'),
-                            q.get('is_figure_option', 0), q['question_text'], q.get('figure_svg'),
-                            q['option_a'], q['option_b'], q['option_c'], q['option_d'],
-                            q['correct_option'], q['explanation'], json.dumps(q.get('option_hints', {}))
-                        ))
-                    conn.commit()
-
-            progress.progress(100, text="Completed!")
-            st.success(f"🎉 Successfully generated and saved all {len(all_qs)} questions for {target_dt}!")
+            st.success(f"🎉 Successfully generated {total_generated} distinct questions for {target_dt}!")
+            st.info("Go to the **'📝 Attempt 100-Question Exam'** tab to take the test!")
         except Exception as e:
             st.error(f"Generation error: {e}")
