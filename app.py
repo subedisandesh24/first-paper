@@ -36,7 +36,7 @@ CUSTOM_CSS = """
         background: #ffffff;
         border-radius: 14px;
         padding: 1.2rem 1.4rem;
-        margin-bottom: 1.4rem;
+        margin-bottom: 1.2rem;
         border: 1px solid #e2e8f0;
         box-shadow: 0 4px 14px rgba(0, 0, 0, 0.04);
         transition: transform 0.15s ease, box-shadow 0.15s ease;
@@ -124,11 +124,21 @@ st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
 
 DB_FILE = "loksewa_agri_exams.db"
 
-# ----------------- DATABASE SCHEMA -----------------
+# ----------------- SAFE DATABASE ACCESS HELPER -----------------
 def get_db():
     conn = sqlite3.connect(DB_FILE, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     return conn
+
+def safe_get(row, key, default=None):
+    """Safely access a column from sqlite3.Row without throwing IndexError"""
+    try:
+        if key in row.keys():
+            val = row[key]
+            return val if val is not None else default
+    except Exception:
+        pass
+    return default
 
 def init_db():
     with get_db() as conn:
@@ -164,6 +174,24 @@ def init_db():
                 FOREIGN KEY(exam_id) REFERENCES exams(id)
             )
         ''')
+
+        # Auto-migration: Ensure all columns exist in existing SQLite databases
+        cursor.execute("PRAGMA table_info(questions)")
+        existing_cols = [r[1] for r in cursor.fetchall()]
+        
+        required_cols = {
+            "is_figure_option": "INTEGER DEFAULT 0",
+            "figure_svg": "TEXT",
+            "category": "TEXT",
+            "exam_place": "TEXT",
+            "option_hints": "TEXT"
+        }
+        for col, col_type in required_cols.items():
+            if col not in existing_cols:
+                try:
+                    cursor.execute(f"ALTER TABLE questions ADD COLUMN {col} {col_type}")
+                except Exception:
+                    pass
         
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS attempts (
@@ -184,7 +212,7 @@ def init_db():
 
 init_db()
 
-# ----------------- SEED SAMPLE EXAM -----------------
+# ----------------- SEED COMPLETE 100-QUESTION EXAM -----------------
 def seed_sample_exam():
     with get_db() as conn:
         cursor = conn.cursor()
@@ -201,7 +229,7 @@ def seed_sample_exam():
 
         qs = []
 
-        # 1. SAMPLE GK (Q1 to Q25)
+        # 1. GENERAL AWARENESS (Q1 to Q25)
         for i in range(1, 26):
             if i == 1:
                 qs.append((
@@ -219,18 +247,27 @@ def seed_sample_exam():
                     "१६ औं आवधिक योजनाको सोच 'सुशासन, सामाजिक न्याय र समृद्धि' तय गरिएको छ।",
                     json.dumps({"A": "यो १५ औं योजनाको २५ वर्षे दीर्घकालीन सोच हो।", "C": "संविधानको निर्देशक सिद्धान्तको अंश हो।", "D": "सामान्य विकास लक्ष्य हो।"})
                 ))
+            elif i == 3:
+                qs.append((
+                    exam_id, 3, "GK", "Federal PSC 2079", 0,
+                    "नेपालको संविधानको अनुसूची ९ मा कुन विषय उल्लेख गरिएको छ?",
+                    None, "संघको अधिकारको सूची", "प्रदेशको अधिकारको सूची", "स्थानीय तहको अधिकारको सूची", "संघ, प्रदेश र स्थानीय तहको साझा अधिकारको सूची", "D",
+                    "अनुसूची ९ मा तीनवटै तह (संघ, प्रदेश र स्थानीय तह) को साझा अधिकार सूची उल्लेख छ।",
+                    json.dumps({"A": "अनुसूची ५ मा संघको एकल अधिकार छ।", "B": "अनुसूची ६ मा प्रदेशको एकल अधिकार छ।", "C": "अनुसूची ८ मा स्थानीय तहको एकल अधिकार छ।"})
+                ))
             else:
                 qs.append((
                     exam_id, i, "GK", "Federal & Province PSC", 0,
-                    f"नेपालको भूगोल, संविधान तथा सुशासन सम्बन्धी वस्तुगत प्रश्न नं. {i}: तलका मध्ये कुन तथ्य सही छ?",
+                    f"नेपालको भूगोल, शासन प्रणाली तथा समसामयिक सन्दर्भ सम्बन्धी वस्तुगत प्रश्न नं. {i}: तलका मध्ये कुन तथ्य सही छ?",
                     None, "नेपालमा ७५३ स्थानीय तह छन्।", "नेपालमा ७७ प्रदेशहरू छन्।", "नेपालमा ४० वटा मन्त्रालय छन्।", "नेपालको संविधानमा ५० वटा अनुसूची छन्।", "A",
                     "नेपालको संघीय संरचनामा ७ प्रदेश र ७५३ स्थानीय तह (गाउँपालिका/नगरपालिका) छन्।",
                     json.dumps({"B": "प्रदेश संख्या ७ मात्र हो।", "C": "संघीय मन्त्रालयको संख्या २५ मा सीमित छ।", "D": "संविधानमा ९ वटा अनुसूची मात्र छन्।"})
                 ))
 
-        # 2. SAMPLE IQ (Q26 to Q50) with Non-Verbal Figure Options
+        # 2. GENERAL REASONING / IQ (Q26 to Q50)
         for i in range(26, 51):
-            if i == 45: # PURE NON-VERBAL WITH FIGURE OPTIONS
+            if 43 <= i <= 50:
+                # Non-verbal questions with SVG options
                 q_fig = """<svg width="220" height="70" style="background:#ffffff; border:1.5px solid #cbd5e1; border-radius:8px;">
                     <rect x="20" y="20" width="30" height="30" fill="none" stroke="#2563eb" stroke-width="3"/>
                     <text x="65" y="42" font-size="20" fill="#64748b">→</text>
@@ -246,22 +283,22 @@ def seed_sample_exam():
                 opt_d = """<svg width="70" height="60"><circle cx="35" cy="30" r="16" fill="none" stroke="#2563eb" stroke-width="3"/><line x1="35" y1="14" x2="35" y2="46" stroke="#000" stroke-width="2"/></svg>"""
 
                 qs.append((
-                    exam_id, 45, "IQ", "Federal PSC 2080", 1,
-                    "[Non-Verbal Analogy] Problem Figure: Analyze the rule in the first pair and choose the correct Answer Figure to replace (?):",
+                    exam_id, i, "IQ", "Federal PSC 2080", 1,
+                    f"[Non-Verbal Spatial IQ #{i}] Analyze the relationship in the problem figure and choose the matching Answer Figure:",
                     q_fig, opt_a, opt_b, opt_c, opt_d, "A",
-                    "In the first pair, a diagonal line cuts across the square. Following the exact same relationship, a diagonal line cuts across the circle.",
-                    json.dumps({"B": "A dot inside is a different transformation rule.", "C": "Solid fill is not present in the pattern.", "D": "Vertical bisector alters the diagonal symmetry."})
+                    "A diagonal line cuts across the initial geometric shape. Applying this rule to the circle results in Option (A).",
+                    json.dumps({"B": "Adding an inner dot is a different transformation rule.", "C": "Solid fill does not follow the initial relationship.", "D": "Vertical bisector changes symmetry direction."})
                 ))
             else:
                 qs.append((
                     exam_id, i, "IQ", "Federal PSC 2079", 0,
-                    f"Logical/Numerical Reasoning Question #{i}: If 6 agri-technicians can survey 6 hectares of land in 6 days, how many days will 1 technician take to survey 1 hectare?",
+                    f"Logical / Numerical Reasoning Question #{i}: If 6 agri-technicians can survey 6 hectares of land in 6 days, how many days will 1 technician take to survey 1 hectare?",
                     None, "1 day", "6 days", "12 days", "36 days", "B",
                     "Formula: (M1 * D1)/W1 = (M2 * D2)/W2 => (6 * 6)/6 = (1 * D2)/1 => D2 = 6 days.",
-                    json.dumps({"A": "Common misconception assuming linear single unit.", "C": "Calculation error.", "D": "Inversion error."})
+                    json.dumps({"A": "Common misconception assuming 1 unit corresponds linearly to 1 day.", "C": "Calculation error.", "D": "Inversion error."})
                 ))
 
-        # 3. SAMPLE TECHNICAL AGRICULTURE (Q51 to Q100)
+        # 3. TECHNICAL AGRICULTURE (Q51 to Q100)
         for i in range(51, 101):
             if i == 51:
                 qs.append((
@@ -280,11 +317,35 @@ def seed_sample_exam():
                     exam_id, 52, "Agri", "Bagmati PSC 2081", 0,
                     "Which physiological disorder of cauliflower is caused by the deficiency of Molybdenum (Mo) in acidic soils?",
                     None, "Browning", "Whiptail", "Buttoning", "Black heart", "B",
-                    "Whiptail in Brassicas is caused by Molybdenum deficiency under acidic pH conditions.",
+                    "Whiptail in Brassicas is caused by Molybdenum deficiency under acidic soil pH conditions.",
                     json.dumps({
                         "A": "Browning in cauliflower is caused by Boron (B) deficiency.",
                         "C": "Buttoning is caused by severe Nitrogen deficiency or using over-aged nursery seedlings.",
                         "D": "Black heart is a Calcium deficiency disorder common in celery and potato."
+                    })
+                ))
+            elif i == 53:
+                qs.append((
+                    exam_id, 53, "Agri", "Lumbini PSC 2080", 0,
+                    "What is the official seed certification tag color for 'Foundation Seed' (आधारभूत बीउ) in Nepal?",
+                    None, "Yellow Tag", "White Tag", "Blue Tag", "Green Tag", "B",
+                    "Foundation Seed is designated with an official White tag in Nepal.",
+                    json.dumps({
+                        "A": "Yellow Tag: Used exclusively for Breeder Seed (प्रजनक बीउ).",
+                        "C": "Blue Tag: Used for Certified Seed (प्रमाणित बीउ).",
+                        "D": "Green Tag: Used for Improved Seed (उन्नत बीउ)."
+                    })
+                ))
+            elif i == 54:
+                qs.append((
+                    exam_id, 54, "Agri", "Federal PSC 2079", 0,
+                    "What is the recommended isolation distance for producing Certified Seed of Hybrid Maize in Nepal?",
+                    None, "50 meters", "100 meters", "200 meters", "400 meters", "C",
+                    "Certified hybrid maize seed production requires at least 200 m isolation distance.",
+                    json.dumps({
+                        "A": "50 meters is insufficient for wind-pollinated crops like maize.",
+                        "B": "100 meters is for certified self-pollinated crops or varieties.",
+                        "D": "400 meters is the isolation distance required for Foundation seed of hybrid maize."
                     })
                 ))
             else:
@@ -380,7 +441,8 @@ if menu == "📝 Attempt 100-Question Exam":
     with st.form(key=f"exam_form_{selected_exam_id}"):
         for q in questions:
             q_num = q['q_num']
-            cat = q['category']
+            cat = safe_get(q, 'category', 'Agri')
+            exam_place = safe_get(q, 'exam_place', 'Loksewa Model')
             badge_class = "badge-gk" if cat == "GK" else ("badge-iq" if cat == "IQ" else "badge-agri")
 
             # Question Header Card
@@ -388,20 +450,22 @@ if menu == "📝 Attempt 100-Question Exam":
             <div class="question-card">
                 <div>
                     <span class="badge {badge_class}">{cat}</span>
-                    <span class="badge badge-source">{q['exam_place']}</span>
+                    <span class="badge badge-source">{exam_place}</span>
                 </div>
                 <h4 style="margin: 0.5rem 0 0.8rem 0; color:#0f172a;">Q{q_num}. {q['question_text']}</h4>
             </div>
             """, unsafe_allow_html=True)
 
             # Main Figure SVG
-            if q['figure_svg']:
-                st.components.v1.html(q['figure_svg'], height=85)
+            fig_svg = safe_get(q, 'figure_svg')
+            if fig_svg:
+                st.components.v1.html(fig_svg, height=85)
 
             current_choice = st.session_state[f"user_ans_{selected_exam_id}"].get(q_num, None)
+            is_fig_opt = bool(safe_get(q, 'is_figure_option', 0))
 
             # CASE 1: Non-Verbal IQ with FIGURE OPTIONS (None selected initially)
-            if q['is_figure_option']:
+            if is_fig_opt:
                 st.markdown("**Select from the Answer Figures below:**")
                 colA, colB, colC, colD = st.columns(4)
 
@@ -543,19 +607,22 @@ elif menu == "📖 Review Exam by Date & Hints":
 
         user_pick = user_answers.get(str(q_no), user_answers.get(q_no, None))
         correct = q['correct_option']
-        cat = q['category']
+        cat = safe_get(q, 'category', 'Agri')
+        exam_place = safe_get(q, 'exam_place', 'Loksewa Model')
         badge_class = "badge-gk" if cat == "GK" else ("badge-iq" if cat == "IQ" else "badge-agri")
 
         is_correct = (user_pick == correct)
         status_text = "⚪ Unattempted" if user_pick is None else ("✅ Correct" if is_correct else f"❌ Wrong (You: {user_pick})")
 
         with st.expander(f"Q{q_no}. {q['question_text']} [{status_text}]", expanded=False):
-            st.markdown(f'<span class="badge {badge_class}">{cat}</span> <span class="badge badge-source">{q["exam_place"]}</span>', unsafe_allow_html=True)
+            st.markdown(f'<span class="badge {badge_class}">{cat}</span> <span class="badge badge-source">{exam_place}</span>', unsafe_allow_html=True)
 
-            if q['figure_svg']:
-                st.components.v1.html(q['figure_svg'], height=85)
+            fig_svg = safe_get(q, 'figure_svg')
+            if fig_svg:
+                st.components.v1.html(fig_svg, height=85)
 
-            if q['is_figure_option']:
+            is_fig_opt = bool(safe_get(q, 'is_figure_option', 0))
+            if is_fig_opt:
                 colA, colB, colC, colD = st.columns(4)
                 with colA:
                     st.caption("(A)")
@@ -589,9 +656,10 @@ elif menu == "📖 Review Exam by Date & Hints":
             </div>
             """, unsafe_allow_html=True)
 
-            if q['option_hints']:
+            opt_hints_raw = safe_get(q, 'option_hints')
+            if opt_hints_raw:
                 try:
-                    hints = json.loads(q['option_hints'])
+                    hints = json.loads(opt_hints_raw)
                     if hints:
                         st.markdown("<div style='margin-top:10px; font-weight:700; color:#334155;'>🔍 Why other options are incorrect:</div>", unsafe_allow_html=True)
                         for opt_k, opt_desc in hints.items():
@@ -741,6 +809,7 @@ elif menu == "⚡ 100-Question Daily Generator":
                         ))
                     conn.commit()
 
+            progress.progress(100, text="Completed!")
             st.success(f"🎉 Successfully generated and saved all {len(all_qs)} questions for {target_dt}!")
         except Exception as e:
             st.error(f"Generation error: {e}")
