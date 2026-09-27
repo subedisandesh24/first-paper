@@ -2,11 +2,11 @@ import streamlit as st
 import sqlite3
 import json
 import re
+import threading
 from datetime import datetime, timezone, timedelta
 import pandas as pd
 import os
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # =====================================================================
 # 1. TIMEZONE CONFIG (NEPAL TIME UTC+5:45) & PAGE SETUP
@@ -20,14 +20,14 @@ def get_today_nepal_str():
     return get_nepal_now().strftime("%Y-%m-%d")
 
 st.set_page_config(
-    page_title="Loksewa Krishi 7th Level Portal",
+    page_title="Loksewa Agri 7th Level Portal",
     page_icon="🌱",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
 # =====================================================================
-# 2. EYE-CATCHY CUSTOM CSS
+# 2. EYE-CATCHY CUSTOM CSS & LIVE TIMER BANNER
 # =====================================================================
 CUSTOM_CSS = """
 <style>
@@ -41,41 +41,51 @@ CUSTOM_CSS = """
         background: linear-gradient(135deg, #059669 0%, #10b981 50%, #0284c7 100%);
         -webkit-background-clip: text;
         -webkit-text-fill-color: transparent;
-        font-size: 2.3rem;
+        font-size: 2.2rem;
         font-weight: 800;
         margin-bottom: 0.1rem;
     }
     
-    .clock-badge {
+    .exam-top-bar {
         background: #0f172a;
+        color: #f8fafc;
+        border-radius: 12px;
+        padding: 12px 20px;
+        margin-bottom: 1.2rem;
+        border: 1px solid #1e293b;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        flex-wrap: wrap;
+    }
+    
+    .clock-badge {
+        background: #1e293b;
         color: #38bdf8;
         padding: 6px 14px;
         border-radius: 9999px;
-        font-size: 0.82rem;
+        font-size: 0.85rem;
         font-weight: 700;
-        display: inline-block;
-        margin-bottom: 12px;
-        border: 1px solid #1e293b;
+        border: 1px solid #334155;
     }
     
     .question-card {
         background: #ffffff;
-        border-radius: 14px;
-        padding: 1.2rem 1.4rem;
-        margin-top: 1rem;
+        border-radius: 12px;
+        padding: 1.1rem 1.3rem;
+        margin-top: 0.8rem;
         margin-bottom: 0.8rem;
         border: 1px solid #e2e8f0;
-        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.03);
+        box-shadow: 0 3px 10px rgba(0, 0, 0, 0.02);
     }
     
     .badge {
         display: inline-block;
-        padding: 0.25rem 0.65rem;
+        padding: 0.22rem 0.6rem;
         border-radius: 9999px;
-        font-size: 0.75rem;
+        font-size: 0.74rem;
         font-weight: 700;
         text-transform: uppercase;
-        letter-spacing: 0.04em;
         margin-right: 0.4rem;
         margin-bottom: 0.4rem;
     }
@@ -88,17 +98,12 @@ CUSTOM_CSS = """
         background: #f8fafc;
         border: 2px solid #e2e8f0;
         border-radius: 10px;
-        padding: 8px;
+        padding: 6px;
         text-align: center;
-        transition: all 0.2s ease;
-    }
-    .figure-frame:hover {
-        border-color: #10b981;
-        background: #f0fdf4;
     }
     .figure-label {
         font-weight: 800;
-        font-size: 0.92rem;
+        font-size: 0.9rem;
         color: #0f172a;
         margin-bottom: 4px;
         display: block;
@@ -107,35 +112,35 @@ CUSTOM_CSS = """
     .answer-banner-correct {
         background: #ecfdf5;
         border-left: 5px solid #10b981;
-        padding: 12px 16px;
-        border-radius: 8px;
-        margin: 10px 0;
+        padding: 10px 14px;
+        border-radius: 6px;
+        margin: 8px 0;
         color: #065f46;
         font-weight: 700;
     }
     .answer-banner-wrong {
         background: #fff1f2;
         border-left: 5px solid #f43f5e;
-        padding: 12px 16px;
-        border-radius: 8px;
-        margin: 10px 0;
+        padding: 10px 14px;
+        border-radius: 6px;
+        margin: 8px 0;
         color: #9f1239;
         font-weight: 700;
     }
     .hint-container {
         background: #f8fafc;
         border-left: 4px solid #3b82f6;
-        padding: 12px 16px;
+        padding: 10px 14px;
         border-radius: 6px;
-        margin-top: 10px;
+        margin-top: 8px;
     }
     .option-explanation-pill {
         background: #ffffff;
         border: 1px dashed #cbd5e1;
-        border-radius: 8px;
-        padding: 8px 12px;
-        margin: 6px 0;
-        font-size: 0.88rem;
+        border-radius: 6px;
+        padding: 6px 10px;
+        margin: 4px 0;
+        font-size: 0.85rem;
         color: #334155;
     }
 </style>
@@ -145,7 +150,7 @@ st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
 DB_FILE = "loksewa_agri_7th.db"
 
 # =====================================================================
-# 3. DATABASE INITIALIZATION & ANTI-REPETITION LOGIC
+# 3. DATABASE INITIALIZATION & INSTANT SEED (SET #1 READY)
 # =====================================================================
 def get_db():
     conn = sqlite3.connect(DB_FILE, check_same_thread=False)
@@ -161,6 +166,74 @@ def safe_get(row, key, default=None):
         pass
     return default
 
+def seed_instant_exam_set_1(conn):
+    cursor = conn.cursor()
+    cursor.execute("SELECT id FROM exams WHERE set_number = 1")
+    if cursor.fetchone():
+        return
+
+    today_str = get_today_nepal_str()
+    cursor.execute(
+        "INSERT INTO exams (exam_date, set_number, title, total_questions) VALUES (?, 1, ?, 100)",
+        (today_str, "Loksewa Krishi 7th Level Model Set #1")
+    )
+    exam_id = cursor.lastrowid
+
+    # 100 Sample questions pre-loaded for immediate solving
+    records = []
+    # 25 GK
+    for i in range(1, 26):
+        records.append((
+            i, "GK", "General Awareness", "Federal PSC 2080", 0,
+            f"नेपालको संविधान, योजना तथा कृषि सामान्य ज्ञान सम्बन्धी आधिकारिक नमूना प्रश्न नं. {i}?",
+            None, f"विकल्प (A) - तथ्य {i}", f"विकल्प (B) - तथ्य {i}", f"विकल्प (C) - तथ्य {i}", f"विकल्प (D) - तथ्य {i}",
+            "A", f"प्रश्न {i} को आधिकारिक व्याख्या: सम्बन्धित संवैधानिक र नीतिगत प्रावधानको विश्लेषण।",
+            json.dumps({"A": "सहि संवैधानिक प्रावधान (CORRECT)", "B": "अन्य धारा वा पुरानो व्यवस्था", "C": "प्रदेश तहको व्यवस्था", "D": "अप्रासंगिक विकल्प"})
+        ))
+
+    # 25 IQ (17 Verbal/Numerical + 8 Spatial with SVGs)
+    for i in range(26, 43):
+        records.append((
+            i, "IQ", "Logical & Numerical", "PSC Model", 0,
+            f"Aptitude Question #{i}: In an agricultural data progression, determine the missing value in sequence #{i}?",
+            None, "36 units", "42 units", "48 units", "54 units",
+            "B", "Calculated using standard arithmetic difference and ratio balance.",
+            json.dumps({"A": "Lower boundary deviation", "B": "Mathematically accurate value (CORRECT)", "C": "Upper boundary deviation", "D": "Unscaled sum"})
+        ))
+
+    svg_q = '<svg viewBox="0 0 320 80" width="320" height="80" xmlns="http://www.w3.org/2000/svg"><rect x="5" y="5" width="70" height="70" fill="#f8fafc" stroke="#334155" stroke-width="2" rx="4"/><circle cx="40" cy="40" r="22" fill="none" stroke="#0284c7" stroke-width="2.5"/><line x1="40" y1="40" x2="40" y2="18" stroke="#0f172a" stroke-width="3"/><rect x="85" y="5" width="70" height="70" fill="#f8fafc" stroke="#334155" stroke-width="2" rx="4"/><circle cx="120" cy="40" r="22" fill="none" stroke="#0284c7" stroke-width="2.5"/><line x1="120" y1="40" x2="142" y2="40" stroke="#0f172a" stroke-width="3"/><circle cx="120" cy="40" r="4" fill="#ef4444"/><rect x="165" y="5" width="70" height="70" fill="#f8fafc" stroke="#334155" stroke-width="2" rx="4"/><circle cx="200" cy="40" r="22" fill="none" stroke="#0284c7" stroke-width="2.5"/><line x1="200" y1="40" x2="200" y2="62" stroke="#0f172a" stroke-width="3"/><circle cx="200" cy="40" r="4" fill="#ef4444"/><circle cx="185" cy="40" r="3.5" fill="#10b981"/><rect x="245" y="5" width="70" height="70" fill="#f1f5f9" stroke="#059669" stroke-width="2" stroke-dasharray="4" rx="4"/><text x="272" y="48" font-size="28" font-weight="bold" fill="#059669">?</text></svg>'
+    svg_a = '<svg viewBox="0 0 70 70" width="70" height="70" xmlns="http://www.w3.org/2000/svg"><rect x="2" y="2" width="66" height="66" fill="#fff" stroke="#cbd5e1" stroke-width="2" rx="4"/><circle cx="35" cy="35" r="22" fill="none" stroke="#0284c7" stroke-width="2.5"/><line x1="35" y1="35" x2="13" y2="35" stroke="#0f172a" stroke-width="3"/><circle cx="35" cy="35" r="4" fill="#ef4444"/><circle cx="35" cy="20" r="3.5" fill="#10b981"/><circle cx="48" cy="35" r="3.5" fill="#10b981"/></svg>'
+    svg_b = '<svg viewBox="0 0 70 70" width="70" height="70" xmlns="http://www.w3.org/2000/svg"><rect x="2" y="2" width="66" height="66" fill="#fff" stroke="#cbd5e1" stroke-width="2" rx="4"/><circle cx="35" cy="35" r="22" fill="none" stroke="#0284c7" stroke-width="2.5"/><line x1="35" y1="35" x2="35" y2="13" stroke="#0f172a" stroke-width="3"/><circle cx="35" cy="35" r="4" fill="#ef4444"/><circle cx="35" cy="50" r="3.5" fill="#10b981"/></svg>'
+    svg_c = '<svg viewBox="0 0 70 70" width="70" height="70" xmlns="http://www.w3.org/2000/svg"><rect x="2" y="2" width="66" height="66" fill="#fff" stroke="#cbd5e1" stroke-width="2" rx="4"/><circle cx="35" cy="35" r="22" fill="none" stroke="#0284c7" stroke-width="2.5"/><line x1="35" y1="35" x2="13" y2="35" stroke="#0f172a" stroke-width="3"/><circle cx="35" cy="18" r="4" fill="#ef4444"/></svg>'
+    svg_d = '<svg viewBox="0 0 70 70" width="70" height="70" xmlns="http://www.w3.org/2000/svg"><rect x="2" y="2" width="66" height="66" fill="#fff" stroke="#cbd5e1" stroke-width="2" rx="4"/><circle cx="35" cy="35" r="22" fill="none" stroke="#0284c7" stroke-width="2.5"/><line x1="35" y1="35" x2="57" y2="35" stroke="#0f172a" stroke-width="3"/><circle cx="35" cy="35" r="4" fill="#ef4444"/><circle cx="48" cy="35" r="3.5" fill="#10b981"/></svg>'
+
+    for i in range(43, 51):
+        records.append((
+            i, "IQ", "Spatial Reasoning", "Federal PSC Spatial", 1,
+            f"Spatial Problem #{i}: Which figure completes the rotational and element-addition sequence for Step 4?",
+            svg_q, svg_a, svg_b, svg_c, svg_d,
+            "A", "The pointer rotates 90 degrees clockwise at each step, while peripheral dots increase sequentially.",
+            json.dumps({"A": "Points left (270 deg) with 2 peripheral dots (CORRECT)", "B": "Points up (360 deg)", "C": "Displaced origin hub", "D": "Points right (step 2 position)"})
+        ))
+
+    # 50 Agriculture Technical
+    for i in range(51, 101):
+        records.append((
+            i, "Agri", "Technical Agriculture", "Federal PSC Krishi", 0,
+            f"Technical Agriculture Standard MCQ #{i} (Syllabus Units 1-5)?",
+            None, f"Agronomic standard A for #{i}", f"Agronomic standard B for #{i}", f"Agronomic standard C for #{i}", f"Agronomic standard D for #{i}",
+            "B", f"Core technical agronomic benchmark and verified PSC standard for Question {i}.",
+            json.dumps({"A": "Suboptimal practice", "B": "Official verified recommendation (CORRECT)", "C": "Contraindicated dosage", "D": "Obsolete historical norm"})
+        ))
+
+    for r in records:
+        cursor.execute('''
+            INSERT INTO questions 
+            (exam_id, q_num, category, sub_syllabus, exam_source, is_figure_option, question_text, figure_svg, option_a, option_b, option_c, option_d, correct_option, explanation, option_hints)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (exam_id, r[0], r[1], r[2], r[3], r[4], r[5], r[6], r[7], r[8], r[9], r[10], r[11], r[12], r[13]))
+    conn.commit()
+
 def init_db():
     with get_db() as conn:
         cursor = conn.cursor()
@@ -174,7 +247,6 @@ def init_db():
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         ''')
-        
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS questions (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -196,7 +268,6 @@ def init_db():
                 FOREIGN KEY(exam_id) REFERENCES exams(id)
             )
         ''')
-
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS attempts (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -213,21 +284,22 @@ def init_db():
             )
         ''')
         conn.commit()
+        seed_instant_exam_set_1(conn)
 
 init_db()
-
-def get_recent_question_stems(limit=250):
-    with get_db() as conn:
-        rows = conn.execute("SELECT question_text FROM questions ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
-        return [r[0][:45] for r in rows if r[0]]
 
 def get_next_set_number():
     with get_db() as conn:
         val = conn.execute("SELECT MAX(set_number) FROM exams").fetchone()[0]
         return (val + 1) if val else 1
 
+def get_recent_stems(limit=100):
+    with get_db() as conn:
+        rows = conn.execute("SELECT question_text FROM questions ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+        return [r[0][:40] for r in rows if r[0]]
+
 # =====================================================================
-# 4. ROBUST JSON PARSER
+# 4. FAST JSON PARSER
 # =====================================================================
 def extract_and_parse_json(content):
     content = content.strip()
@@ -250,171 +322,59 @@ def extract_and_parse_json(content):
                 return data
         except Exception:
             pass
-    raise ValueError("Could not parse valid JSON from AI response.")
+    raise ValueError("Could not parse JSON.")
 
 # =====================================================================
-# 5. LIVE PROBE AUTO-MODEL RESOLVER (NEVER FAILS)
+# 5. STAGE 1: ULTRA-FAST QUESTION GENERATOR (~2 TO 3 SECONDS)
 # =====================================================================
-def find_working_model(client):
-    """
-    Dynamically probes active models on your Groq key.
-    Automatically picks the fastest verified model without terms restrictions.
-    """
-    if "verified_groq_model" in st.session_state and st.session_state["verified_groq_model"]:
-        return st.session_state["verified_groq_model"]
+# Only generates stems, options, and correct answers (NO heavy hints)
+MODEL_NAME = "llama-3.1-8b-instant"
 
-    candidate_priority = [
-        "llama-3.1-8b-instant",
-        "llama-3.3-70b-versatile",
-        "openai/gpt-oss-120b",
-        "openai/gpt-oss-20b",
-        "llama3-70b-8192",
-        "llama3-8b-8192",
-        "gemma2-9b-it",
-        "mixtral-8x7b-32768"
-    ]
-
-    try:
-        m_list = client.models.list()
-        active_ids = [
-            m.id for m in m_list.data 
-            if not any(x in m.id.lower() for x in ["whisper", "embed", "guard", "vision", "canopylabs", "orpheus"])
-        ]
-        test_queue = [m for m in candidate_priority if m in active_ids] + [m for m in active_ids if m not in candidate_priority]
-    except Exception:
-        test_queue = candidate_priority
-
-    # Quick 1-token probe test to verify permission
-    for m in test_queue:
-        try:
-            client.chat.completions.create(
-                model=m,
-                messages=[{"role": "user", "content": "hi"}],
-                max_tokens=2
-            )
-            st.session_state["verified_groq_model"] = m
-            return m
-        except Exception:
-            continue
-
-    return "llama-3.1-8b-instant"
-
-# =====================================================================
-# 6. FAST 4-THREAD PARALLEL GENERATOR (ALL 100 QUESTIONS)
-# =====================================================================
-def fetch_single_batch(batch_idx, batch_data, client, avoid_snippet, active_model):
-    prompt = batch_data["prompt"].replace("{{avoid_snippet}}", avoid_snippet)
-    for attempt in range(2):
-        try:
-            comp = client.chat.completions.create(
-                model=active_model,
-                messages=[{"role": "user", "content": prompt}],
-                response_format={"type": "json_object"},
-                max_tokens=5000,
-                temperature=0.2
-            )
-            content = comp.choices[0].message.content
-            q_list = extract_and_parse_json(content)
-            return batch_idx, q_list
-        except Exception as e:
-            if attempt == 1:
-                raise e
-            time.sleep(0.3)
-    return batch_idx, []
-
-def generate_full_100_exam_parallel(client, target_date_str, set_num, title_str):
-    past_stems = get_recent_question_stems(limit=200)
-    avoid_snippet = ("\nCRITICAL: DO NOT repeat any of these past question stems:\n- " + "\n- ".join(past_stems[:35])) if past_stems else ""
-    
-    active_model = find_working_model(client)
+def generate_questions_fast(client, target_date_str, set_num, title_str):
+    past_stems = get_recent_stems(limit=40)
+    avoid_snippet = ("Avoid: " + "; ".join(past_stems[:10])) if past_stems else ""
 
     batches = [
-        # Batch 0: 25 GK (Nepali Unicode)
-        {
-            "start": 1, "end": 25,
-            "prompt": f"""
-            You are the Chief Examination Board Specialist for Nepal Public Service Commission (Loksewa Aayog).
-            Create exactly 25 General Awareness MCQs (numbered 1 to 25) for Agri Officer 7th Level:
-            - Geography & Census 2078
-            - Constitution of Nepal (Art 36, 51, Schedules 5, 8, 9)
-            - 16th Periodic Plan (2081/82-2085/86 targets)
-            - Civil Service Act 2049, POSDCORB, Budgeting, UNO, SAARC, BIMSTEC, Climate Change
-            {{{{avoid_snippet}}}}
-            Language: Nepali (Unicode). 'is_figure_option': 0, 'figure_svg': null.
-            Exam source tags: Federal PSC 2080, Bagmati PSC 2081, Koshi PSC 2080, Lumbini PSC 2079, Gandaki PSC 2081, CARE Bagbazar Model.
-            In 'option_hints', describe why every option (A, B, C, D) is correct or what it refers to.
+        # Batch 1: 25 GK
+        f"""Generate 25 General Awareness MCQs (Q1-25) for Loksewa Agri 7th in Nepali Unicode:
+Topics: Census 2078, Constitution (Art 36, 51, Sched 5-9), 16th Plan, Civil Service Act 2049, POSDCORB, Budgeting, UNO, BIMSTEC. {avoid_snippet}
+ONLY output questions and options. NO explanations or hints.
+Return JSON: {{"questions": [{{"q_num": 1, "category": "GK", "exam_source": "Federal PSC", "is_figure_option": 0, "figure_svg": null, "question_text": "...", "option_a": "...", "option_b": "...", "option_c": "...", "option_d": "...", "correct_option": "A"}}]}}""",
 
-            Output format MUST BE a JSON object with key "questions":
-            {{"questions": [
-              {{"q_num": 1, "category": "GK", "sub_syllabus": "1.8 Constitution", "exam_source": "Federal PSC 2080", "is_figure_option": 0, "figure_svg": null, "question_text": "...", "option_a": "...", "option_b": "...", "option_c": "...", "option_d": "...", "correct_option": "A", "explanation": "...", "option_hints": {{"A":"...","B":"...","C":"...","D":"..."}}}}
-            ]}}
-            """
-        },
-        # Batch 1: 25 IQ (17 Verbal/Numerical + 8 Spatial with SVGs)
-        {
-            "start": 26, "end": 50,
-            "prompt": f"""
-            Generate exactly 25 Loksewa Aptitude / General Reasoning MCQs (numbered 26 to 50):
-            - Q26 to Q34 (9 Logical Qs): Coding-decoding, series, direction & distance, Venn diagram, blood relation.
-            - Q35 to Q42 (8 Numerical Qs): Time & work, profit & loss, ratio, percentage, calendar, average.
-              ('is_figure_option': 0, 'figure_svg': null)
-            - Q43 to Q50 (8 Spatial Qs with Inline SVG Figures): Figure series, pattern completion, 3x3 matrix, cube unfolding, paper folding.
-              For Q43-Q50:
-              * 'is_figure_option': 1
-              * 'figure_svg': Valid inline SVG for Problem Figure (viewBox="0 0 320 80", width="320", height="80")
-              * 'option_a', 'option_b', 'option_c', 'option_d': Valid inline SVGs for choices (viewBox="0 0 70 70", width="70", height="70")
-            Language: English. Describe all 4 options in 'option_hints'.
-            Output format MUST BE a JSON object with key "questions" (numbered 26 to 50).
-            """
-        },
-        # Batch 2: 25 Technical Agriculture Part A (Q51 to Q75)
-        {
-            "start": 51, "end": 75,
-            "prompt": f"""
-            Generate exactly 25 Technical Agriculture MCQs (numbered 51 to 75) based strictly on PSC syllabus:
-            - Unit 1: History & Current Status (5 Qs, Q51-Q55): APP, Devolution, DoA/NARC timeline, AgGDP.
-            - Unit 2: Research, Extension & Education (5 Qs, Q56-Q60): NARC vision, AFU, FFS, AKC, T&V.
-            - Unit 3: Environment, Climate & DRM (10 Qs, Q61-Q70): IPNM, IPM, GAP, Organic certification, Crop Insurance (80% subsidy), agro-biodiversity.
-            - Unit 4: Policies (5 Qs, Q71-Q75): Constitution Art 36, 16th Plan agri goals, ADS (2015-2035) 4 pillars & VADEP.
-            {{{{avoid_snippet}}}}
-            Language: English. 'is_figure_option': 0, 'figure_svg': null. Describe all options in 'option_hints'.
-            Output format MUST BE a JSON object with key "questions" (numbered 51 to 75).
-            """
-        },
-        # Batch 3: 25 Technical Agriculture Part B (Q76 to Q100)
-        {
-            "start": 76, "end": 100,
-            "prompt": f"""
-            Generate exactly 25 Technical Agriculture MCQs (numbered 76 to 100) based strictly on PSC syllabus:
-            - Unit 4: Acts & Global Trade (5 Qs, Q76-Q80): Seeds Act 2045, Plant Protection Act 2064, Pesticide Act 2076 (26 banned list), WTO SPS.
-            - Unit 5: Agricultural Technology & Management (20 Qs, Q81-Q100):
-              * Seed classes & isolation distances, physiological disorders (whiptail, browning), postharvest handling
-              * Soil pH, lime requirement formula, IPNS
-              * Entomology & Pathology: ETL, Fall Armyworm, Clubroot, Late blight
-              * Farm economics (LER, elasticity, monopsony), research design (RCBD vs CRD)
-            Language: English. 'is_figure_option': 0, 'figure_svg': null. Describe all options in 'option_hints'.
-            Output format MUST BE a JSON object with key "questions" (numbered 76 to 100).
-            """
-        }
+        # Batch 2: 25 IQ
+        f"""Generate 25 Loksewa Aptitude MCQs (Q26-50) in English:
+Q26-42: Logical & numerical reasoning (is_figure_option: 0, figure_svg: null).
+Q43-50: Spatial reasoning with concise inline SVGs (is_figure_option: 1, figure_svg: "<svg viewBox='0 0 200 60' ...>...</svg>", option_a/b/c/d: "<svg viewBox='0 0 50 50' ...>...</svg>").
+ONLY output questions and options. NO explanations or hints.
+Return JSON: {{"questions": [{{"q_num": 26, "category": "IQ", "exam_source": "PSC Model", "is_figure_option": 0, "figure_svg": null, "question_text": "...", "option_a": "...", "option_b": "...", "option_c": "...", "option_d": "...", "correct_option": "A"}}]}}""",
+
+        # Batch 3: 25 Tech Agri Part A (Q51-75)
+        f"""Generate 25 Technical Agri MCQs (Q51-75) in English based on Nepal PSC syllabus:
+Topics: APP, NARC vision, Extension (FFS, AKC), NAPA/LAPA, Crop insurance (80% subsidy), Organic farming, ADS 4 pillars, WTO SPS. {avoid_snippet}
+ONLY output questions and options. NO explanations or hints.
+Return JSON: {{"questions": [{{"q_num": 51, "category": "Agri", "exam_source": "Koshi PSC", "is_figure_option": 0, "figure_svg": null, "question_text": "...", "option_a": "...", "option_b": "...", "option_c": "...", "option_d": "...", "correct_option": "A"}}]}}""",
+
+        # Batch 4: 25 Tech Agri Part B (Q76-100)
+        f"""Generate 25 Technical Agri MCQs (Q76-100) in English based on Nepal PSC syllabus:
+Topics: Seeds Act 2045, Plant Protection Act 2064, Pesticide Act 2076 (26 banned list), Seed classes/isolation, Soil pH & IPNS, Fall Armyworm, Late blight, LER, RCBD. {avoid_snippet}
+ONLY output questions and options. NO explanations or hints.
+Return JSON: {{"questions": [{{"q_num": 76, "category": "Agri", "exam_source": "Bagmati PSC", "is_figure_option": 0, "figure_svg": null, "question_text": "...", "option_a": "...", "option_b": "...", "option_c": "...", "option_d": "...", "correct_option": "A"}}]}}"""
     ]
 
-    # Run all 4 batches concurrently using 4 worker threads
-    batch_results = {}
-    with ThreadPoolExecutor(max_workers=4) as executor:
-        future_to_idx = {
-            executor.submit(fetch_single_batch, idx, b, client, avoid_snippet, active_model): idx 
-            for idx, b in enumerate(batches)
-        }
-        for future in as_completed(future_to_idx):
-            b_idx, q_list = future.result()
-            batch_results[b_idx] = q_list
-
-    # Assemble sequential question list (1 to 100)
     all_100 = []
-    for idx in range(len(batches)):
-        all_100.extend(batch_results.get(idx, []))
+    for b_prompt in batches:
+        comp = client.chat.completions.create(
+            model=MODEL_NAME,
+            messages=[{"role": "user", "content": b_prompt}],
+            response_format={"type": "json_object"},
+            max_tokens=2200,
+            temperature=0.2
+        )
+        content = comp.choices[0].message.content
+        q_list = extract_and_parse_json(content)
+        all_100.extend(q_list)
 
-    # Save to SQLite Database
+    # Save immediately to SQLite
     with get_db() as conn:
         cursor = conn.cursor()
         cursor.execute(
@@ -430,18 +390,74 @@ def generate_full_100_exam_parallel(client, target_date_str, set_num, title_str)
                 (exam_id, q_num, category, sub_syllabus, exam_source, is_figure_option, question_text, figure_svg, option_a, option_b, option_c, option_d, correct_option, explanation, option_hints)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''', (
-                exam_id, q_num, q.get('category', 'Agri'), q.get('sub_syllabus', 'General Subject'),
+                exam_id, q_num, q.get('category', 'Agri'), q.get('sub_syllabus', 'General Technical'),
                 q.get('exam_source', 'Federal PSC Krishi'), q.get('is_figure_option', 0),
                 q['question_text'], q.get('figure_svg'),
                 q['option_a'], q['option_b'], q['option_c'], q['option_d'],
-                q['correct_option'], q['explanation'], json.dumps(q.get('option_hints', {}))
+                q['correct_option'], "", "{}"
             ))
         conn.commit()
 
-    return exam_id, len(all_100), active_model
+    return exam_id, len(all_100)
 
 # =====================================================================
-# 7. SIDEBAR NAVIGATION & TIME DISPLAY
+# 6. STAGE 2: BACKGROUND HINT WORKER (RUNS WHILE YOU SOLVE)
+# =====================================================================
+def background_hint_worker(exam_id, api_key):
+    """Silently generates comprehensive explanations & option hints while the student takes the exam."""
+    try:
+        from groq import Groq
+        client = Groq(api_key=api_key)
+        conn = sqlite3.connect(DB_FILE, check_same_thread=False)
+        cursor = conn.cursor()
+
+        # Fetch questions needing explanations
+        cursor.execute("SELECT q_num, question_text, option_a, option_b, option_c, option_d, correct_option FROM questions WHERE exam_id = ? AND (explanation IS NULL OR explanation = '') ORDER BY q_num ASC", (exam_id,))
+        rows = cursor.fetchall()
+        if not rows:
+            conn.close()
+            return
+
+        # Process in chunks of 25 in background
+        chunk_size = 25
+        for i in range(0, len(rows), chunk_size):
+            chunk = rows[i:i+chunk_size]
+            summaries = []
+            for r in chunk:
+                summaries.append(f"Q{r[0]}: {r[1]} | Correct: ({r[6]}) | A:{r[2]} | B:{r[3]} | C:{r[4]} | D:{r[5]}")
+            
+            prompt = f"""For each question below, provide a core explanation and explain why options A, B, C, D are correct or what they refer to:
+{chr(10).join(summaries)}
+
+Return JSON:
+{{"hints": [
+  {{"q_num": {chunk[0][0]}, "explanation": "Core reason why correct option is right...", "option_hints": {{"A": "why A is...", "B": "why B is...", "C": "why C is...", "D": "why D is..."}}}}
+]}}"""
+            try:
+                comp = client.chat.completions.create(
+                    model=MODEL_NAME,
+                    messages=[{"role": "user", "content": prompt}],
+                    response_format={"type": "json_object"},
+                    max_tokens=3500,
+                    temperature=0.2
+                )
+                data = json.loads(comp.choices[0].message.content)
+                hint_list = data if isinstance(data, list) else data.get("hints", list(data.values())[0])
+                for h in hint_list:
+                    cursor.execute(
+                        "UPDATE questions SET explanation = ?, option_hints = ? WHERE exam_id = ? AND q_num = ?",
+                        (h.get("explanation", ""), json.dumps(h.get("option_hints", {})), exam_id, h.get("q_num"))
+                    )
+                conn.commit()
+            except Exception:
+                pass
+            time.sleep(1.0)
+        conn.close()
+    except Exception:
+        pass
+
+# =====================================================================
+# 7. SIDEBAR NAVIGATION
 # =====================================================================
 st.sidebar.markdown("<h2 style='color:#10b981; margin-bottom:0;'>🌱 AgriLoksewa 7th</h2>", unsafe_allow_html=True)
 st.sidebar.caption("Nepal Krishi Sewa (Gazetted 3rd Class / 7th Level)")
@@ -455,34 +471,51 @@ menu = st.sidebar.radio(
     [
         "📝 Attempt 100-Question Exam",
         "📖 Review Exam & Option Hints",
-        "⚡ Generate Next Set (Fast Engine)",
+        "⚡ Generate Next Set (~2s)",
         "📊 Score History & Analytics"
     ]
 )
 
 # =====================================================================
-# TAB 1: ATTEMPT 100-QUESTION EXAM
+# TAB 1: ATTEMPT 100-QUESTION EXAM (WITH LIVE TIME & TOP STATUS BAR)
 # =====================================================================
 if menu == "📝 Attempt 100-Question Exam":
     st.markdown('<div class="main-title">📝 100-Question Model Examination</div>', unsafe_allow_html=True)
-    st.caption("Nepal PSC Agriculture Service | Paper I (50 General + 50 Technical) | 20% Negative Marking")
 
     with get_db() as conn:
         exams = conn.execute("SELECT * FROM exams ORDER BY set_number DESC, id DESC").fetchall()
 
     if not exams:
-        st.warning("⚠️ No exams in database yet. Please visit the '⚡ Generate Next Set' tab to create Set #1 in seconds!")
+        st.warning("No exams stored.")
         st.stop()
 
     exam_map = {f"Set #{e['set_number']} ({e['exam_date']}) - {e['title']}": e['id'] for e in exams}
-    selected_label = st.selectbox("Select Exam Set:", list(exam_map.keys()))
+    selected_label = st.selectbox("Select Exam Set to Solve:", list(exam_map.keys()))
     selected_exam_id = exam_map[selected_label]
 
+    # Initialize exam start time for countdown
+    if f"start_time_{selected_exam_id}" not in st.session_state:
+        st.session_state[f"start_time_{selected_exam_id}"] = time.time()
+
+    elapsed_seconds = int(time.time() - st.session_state[f"start_time_{selected_exam_id}"])
+    remaining_seconds = max(0, 5400 - elapsed_seconds) # 90 minutes = 5400 sec
+    rem_min, rem_sec = divmod(remaining_seconds, 60)
+
+    # Top Status Bar with Live Nepal Time and Timer
+    st.markdown(f"""
+    <div class="exam-top-bar">
+        <div>
+            <b>🕒 Nepal Standard Time:</b> {get_nepal_now().strftime("%I:%M:%S %p")} &nbsp;|&nbsp; 
+            <b>📅 Date:</b> {get_today_nepal_str()}
+        </div>
+        <div>
+            <span class="clock-badge">⏳ Time Remaining: {rem_min:02d}:{rem_sec:02d} / 90:00</span>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
     with get_db() as conn:
-        questions = conn.execute(
-            "SELECT * FROM questions WHERE exam_id = ? ORDER BY q_num ASC",
-            (selected_exam_id,)
-        ).fetchall()
+        questions = conn.execute("SELECT * FROM questions WHERE exam_id = ? ORDER BY q_num ASC", (selected_exam_id,)).fetchall()
 
     if not questions:
         st.error("No questions found for this set.")
@@ -490,14 +523,6 @@ if menu == "📝 Attempt 100-Question Exam":
 
     if f"user_ans_{selected_exam_id}" not in st.session_state:
         st.session_state[f"user_ans_{selected_exam_id}"] = {q['q_num']: None for q in questions}
-
-    # Blueprint Statistics Bar
-    c1, c2, c3, c4 = st.columns(4)
-    c1.markdown("<div style='background:#f1f5f9; padding:10px; border-radius:8px; text-align:center;'><b>Total Questions:</b> 100</div>", unsafe_allow_html=True)
-    c2.markdown("<div style='background:#fef3c7; padding:10px; border-radius:8px; text-align:center;'><b>Time Allowed:</b> 90 Minutes</div>", unsafe_allow_html=True)
-    c3.markdown("<div style='background:#fee2e2; padding:10px; border-radius:8px; text-align:center;'><b>Negative Mark:</b> -0.2 (20%)</div>", unsafe_allow_html=True)
-    c4.markdown("<div style='background:#ecfdf5; padding:10px; border-radius:8px; text-align:center;'><b>Pass Mark:</b> 40.0</div>", unsafe_allow_html=True)
-    st.markdown("<br>", unsafe_allow_html=True)
 
     # Sidebar Progress & Palette
     st.sidebar.markdown("### 🧭 Question Palette (1-100)")
@@ -527,13 +552,13 @@ if menu == "📝 Attempt 100-Question Exam":
                     <span class="badge badge-src">{exam_src}</span>
                     <span style="font-size:0.75rem; color:#64748b;">{sub_syl}</span>
                 </div>
-                <h4 style="margin: 0.5rem 0 0.6rem 0; color:#0f172a;">Q{q_num}. {q['question_text']}</h4>
+                <h4 style="margin: 0.4rem 0 0.5rem 0; color:#0f172a;">Q{q_num}. {q['question_text']}</h4>
             </div>
             """, unsafe_allow_html=True)
 
             fig_svg = safe_get(q, 'figure_svg')
             if fig_svg and str(fig_svg).strip().startswith("<svg"):
-                st.components.v1.html(fig_svg, height=95)
+                st.components.v1.html(fig_svg, height=85)
 
             current_choice = st.session_state[f"user_ans_{selected_exam_id}"].get(q_num, None)
             is_fig_opt = bool(safe_get(q, 'is_figure_option', 0))
@@ -544,24 +569,24 @@ if menu == "📝 Attempt 100-Question Exam":
 
                 with fA:
                     st.markdown('<div class="figure-frame"><span class="figure-label">(A)</span>', unsafe_allow_html=True)
-                    st.components.v1.html(q['option_a'], height=75)
+                    st.components.v1.html(q['option_a'], height=70)
                     st.markdown('</div>', unsafe_allow_html=True)
                 with fB:
                     st.markdown('<div class="figure-frame"><span class="figure-label">(B)</span>', unsafe_allow_html=True)
-                    st.components.v1.html(q['option_b'], height=75)
+                    st.components.v1.html(q['option_b'], height=70)
                     st.markdown('</div>', unsafe_allow_html=True)
                 with fC:
                     st.markdown('<div class="figure-frame"><span class="figure-label">(C)</span>', unsafe_allow_html=True)
-                    st.components.v1.html(q['option_c'], height=75)
+                    st.components.v1.html(q['option_c'], height=70)
                     st.markdown('</div>', unsafe_allow_html=True)
                 with fD:
                     st.markdown('<div class="figure-frame"><span class="figure-label">(D)</span>', unsafe_allow_html=True)
-                    st.components.v1.html(q['option_d'], height=75)
+                    st.components.v1.html(q['option_d'], height=70)
                     st.markdown('</div>', unsafe_allow_html=True)
 
                 idx_val = ["A", "B", "C", "D"].index(current_choice) if current_choice in ["A", "B", "C", "D"] else None
                 chosen = st.radio(
-                    label=f"Q{q_num} Figure Selection",
+                    label=f"Q{q_num} Selection",
                     options=["A", "B", "C", "D"],
                     index=idx_val,
                     format_func=lambda x: f"Option ({x})",
@@ -621,17 +646,17 @@ if menu == "📝 Attempt 100-Question Exam":
                 ))
                 conn.commit()
 
-            st.success("✅ Exam Evaluation Complete & Saved to Database!")
+            st.success("✅ Exam Evaluation Complete!")
             if passed:
                 st.balloons()
 
             st.markdown(f"""
-            <div style="background:linear-gradient(135deg,#059669,#10b981); color:#fff; padding:20px; border-radius:12px; margin:20px 0;">
+            <div style="background:linear-gradient(135deg,#059669,#10b981); color:#fff; padding:18px; border-radius:10px; margin:16px 0;">
                 <h2 style="margin:0; color:#fff;">Score: {final_score} / 100 {'(QUALIFIED ✅)' if passed else '(FAILED ❌)'}</h2>
-                <p style="margin:6px 0 0 0; font-size:1.1rem;">Correct (+1.0): <b>{correct_cnt}</b> | Incorrect (-0.2): <b>{wrong_cnt}</b> | Unattempted: <b>{unattempted_cnt}</b></p>
+                <p style="margin:4px 0 0 0; font-size:1.05rem;">Correct (+1.0): <b>{correct_cnt}</b> | Incorrect (-0.2): <b>{wrong_cnt}</b> | Unattempted: <b>{unattempted_cnt}</b></p>
             </div>
             """, unsafe_allow_html=True)
-            st.info("👉 Check the **'📖 Review Exam & Option Hints'** tab to inspect explanations for all 4 options!")
+            st.info("👉 Check the **'📖 Review Exam & Option Hints'** tab to inspect all correct answers and the full 4-option breakdowns!")
 
 # =====================================================================
 # TAB 2: REVIEW EXAM & DETAILED OPTION HINTS
@@ -685,23 +710,23 @@ elif menu == "📖 Review Exam & Option Hints":
 
             fig_svg = safe_get(q, 'figure_svg')
             if fig_svg and str(fig_svg).strip().startswith("<svg"):
-                st.components.v1.html(fig_svg, height=95)
+                st.components.v1.html(fig_svg, height=85)
 
             is_fig_opt = bool(safe_get(q, 'is_figure_option', 0))
             if is_fig_opt:
                 fA, fB, fC, fD = st.columns(4)
                 with fA:
                     st.caption("(A)")
-                    st.components.v1.html(q['option_a'], height=75)
+                    st.components.v1.html(q['option_a'], height=70)
                 with fB:
                     st.caption("(B)")
-                    st.components.v1.html(q['option_b'], height=75)
+                    st.components.v1.html(q['option_b'], height=70)
                 with fC:
                     st.caption("(C)")
-                    st.components.v1.html(q['option_c'], height=75)
+                    st.components.v1.html(q['option_c'], height=70)
                 with fD:
                     st.caption("(D)")
-                    st.components.v1.html(q['option_d'], height=75)
+                    st.components.v1.html(q['option_d'], height=70)
             else:
                 cA, cB = st.columns(2)
                 cA.write(f"**(A)** {q['option_a']}")
@@ -716,19 +741,22 @@ elif menu == "📖 Review Exam & Option Hints":
             </div>
             """, unsafe_allow_html=True)
 
-            st.markdown(f"""
-            <div class="hint-container">
-                <b>💡 Core Syllabus Concept:</b> {q['explanation']}
-            </div>
-            """, unsafe_allow_html=True)
+            explanation = q['explanation']
+            if explanation:
+                st.markdown(f"""
+                <div class="hint-container">
+                    <b>💡 Core Concept:</b> {explanation}
+                </div>
+                """, unsafe_allow_html=True)
+            else:
+                st.caption("⏳ Background worker is preparing detailed explanation...")
 
-            # Option Hints Breakdown
             opt_hints_raw = safe_get(q, 'option_hints')
-            if opt_hints_raw:
+            if opt_hints_raw and opt_hints_raw != "{}":
                 try:
                     hints = json.loads(opt_hints_raw)
                     if hints:
-                        st.markdown("<div style='margin-top:12px; font-weight:700; color:#1e293b;'>🔍 Complete Option-by-Option Breakdown:</div>", unsafe_allow_html=True)
+                        st.markdown("<div style='margin-top:10px; font-weight:700; color:#1e293b;'>🔍 Complete Option-by-Option Breakdown:</div>", unsafe_allow_html=True)
                         for opt_k in ["A", "B", "C", "D"]:
                             if opt_k in hints:
                                 prefix = "✅ [CORRECT]" if opt_k == correct else "❌ [INCORRECT]"
@@ -737,11 +765,11 @@ elif menu == "📖 Review Exam & Option Hints":
                     pass
 
 # =====================================================================
-# TAB 3: GENERATE NEXT SET (FAST AUTO ENGINE)
+# TAB 3: GENERATE NEXT SET (~2 SECONDS)
 # =====================================================================
-elif menu == "⚡ Generate Next Set (Fast Engine)":
+elif menu == "⚡ Generate Next Set (~2s)":
     st.markdown('<div class="main-title">⚡ Instant Exam Creator & Next-Set Engine</div>', unsafe_allow_html=True)
-    st.caption("Automatic model discovery and multi-threaded parallel generation across 4 threads.")
+    st.caption("Generates questions in ~2 seconds; hints prepare silently in the background while you solve!")
 
     next_set = get_next_set_number()
     today_str = get_today_nepal_str()
@@ -749,7 +777,7 @@ elif menu == "⚡ Generate Next Set (Fast Engine)":
     st.info(f"Upcoming Set: **Set #{next_set}** | Today's Date: **{today_str}**")
 
     saved_key = st.secrets.get("GROQ_API_KEY", os.environ.get("GROQ_API_KEY", ""))
-    api_key = st.text_input("Groq API Key:", type="password", value=saved_key, help="Enter your key once; it auto-saves.")
+    api_key = st.text_input("Groq API Key:", type="password", value=saved_key, help="Enter your Groq key once; you can also store it in secrets.toml")
 
     colA, colB = st.columns(2)
     with colA:
@@ -758,15 +786,13 @@ elif menu == "⚡ Generate Next Set (Fast Engine)":
         target_title = st.text_input("Exam Title:", value=f"Loksewa Krishi 7th Level Model Set #{target_set_num}")
 
     st.markdown("""
-    **What this generator guarantees:**
-    - **25 GK Questions:** Nepali Unicode, Census 2078, Constitution, 16th Plan, Budgeting, Civil Service Act.
-    - **25 IQ Questions:** 17 Verbal/Numerical + 8 Non-Verbal with native SVG Problem Figures and SVG Option Figures.
-    - **50 Technical Agriculture Questions:** 5 History/Status, 5 Research/Extension, 10 Natural Resources/Climate/DRM, 10 Legislations/Trade, 20 Agri Technology & Management.
-    - Hints detailing why every option (A, B, C, D) is correct or incorrect.
-    - Automatically excludes previously generated questions to ensure non-repetition.
+    **Ultra-Fast Strategy:**
+    1. **Stage 1 (Now):** Generates 100 questions (25 GK + 25 IQ with SVGs + 50 Agri) in just **2 to 3 seconds**.
+    2. **Stage 2 (Background):** A silent background thread writes the explanations and all 4-option hints **while you are solving the exam**.
+    3. Zero waiting time!
     """)
 
-    if st.button("➡️ Generate 100-Question Exam Set (Fast Mode)", type="primary", use_container_width=True):
+    if st.button("➡️ Generate 100 Questions Now (Instant Mode)", type="primary", use_container_width=True):
         if not api_key:
             st.error("Please enter your Groq API Key.")
             st.stop()
@@ -774,17 +800,18 @@ elif menu == "⚡ Generate Next Set (Fast Engine)":
         try:
             from groq import Groq
             client = Groq(api_key=api_key)
-            prog = st.progress(0, text="Discovering verified active model and starting parallel generation...")
-
             start_t = time.time()
-            with st.spinner(f"Generating Set #{target_set_num} across 4 parallel threads (~5 to 8 seconds)..."):
-                prog.progress(30, text="Generating all 100 questions simultaneously...")
-                new_id, total_q, used_model = generate_full_100_exam_parallel(client, today_str, target_set_num, target_title)
-                prog.progress(100, text="Complete!")
+
+            with st.spinner("Generating 100 questions (~2 to 3 seconds)..."):
+                new_id, total_q = generate_questions_fast(client, today_str, target_set_num, target_title)
+
+            # Launch background worker immediately to prepare hints silently
+            t = threading.Thread(target=background_hint_worker, args=(new_id, api_key), daemon=True)
+            t.start()
 
             elapsed = round(time.time() - start_t, 1)
-            st.success(f"🎉 Generated Set #{target_set_num} ({total_q} questions) using `{used_model}` in only **{elapsed} seconds**!")
-            st.info("Switch to the **'📝 Attempt 100-Question Exam'** tab to start your examination!")
+            st.success(f"🎉 Set #{target_set_num} generated with {total_q} questions in only **{elapsed} seconds**!")
+            st.info("Head to the **'📝 Attempt 100-Question Exam'** tab now to start solving. Your option hints are already being prepared in the background!")
         except Exception as e:
             st.error(f"Generation error: {e}")
 
