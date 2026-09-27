@@ -225,13 +225,23 @@ def get_next_set_number():
         return (val + 1) if val else 1
 
 # =====================================================================
-# 4. STRICT 100-QUESTION MULTI-BATCH GENERATION (PSC SYLLABUS)
+# 4. GROQ MODEL RESOLVER & ROBUST GENERATION PIPELINE
 # =====================================================================
-def generate_full_100_exam(client, target_date_str, set_num, title_str):
+def get_available_groq_models(client):
+    try:
+        m_list = client.models.list()
+        valid = [
+            m.id for m in m_list.data 
+            if not any(x in m.id.lower() for x in ["whisper", "embed", "guard", "vision", "safeguard"])
+        ]
+        return valid if valid else ["llama-3.1-8b-instant", "openai/gpt-oss-120b", "openai/gpt-oss-20b"]
+    except Exception:
+        return ["llama-3.1-8b-instant", "openai/gpt-oss-120b", "openai/gpt-oss-20b"]
+
+def generate_full_100_exam(client, target_date_str, set_num, title_str, preferred_model="llama-3.1-8b-instant"):
     past_stems = get_recent_question_stems(limit=200)
     avoid_snippet = ("\nCRITICAL: DO NOT repeat any of these past question stems:\n- " + "\n- ".join(past_stems[:45])) if past_stems else ""
 
-    # Strict 4 Batches matching the Loksewa Gazetted 3rd Class Agri syllabus exactly
     batches = [
         # Batch 1: Part I (1) - 25 General Awareness (GK)
         {
@@ -279,8 +289,8 @@ def generate_full_100_exam(client, target_date_str, set_num, title_str):
             - 2.3 Spatial Reasoning (8 Qs, Q43-Q50): MUST HAVE NATIVE INLINE SVG FIGURES!
               For Q43 to Q50:
               * 'is_figure_option': 1
-              * 'figure_svg': Complete inline valid SVG code for the Problem Figure (viewBox="0 0 320 80", width=320, height=80, with clean rects, circles, lines, markers, questions mark)
-              * 'option_a', 'option_b', 'option_c', 'option_d': Each must be complete inline valid SVG code (viewBox="0 0 70 70", width=70, height=70) representing the 4 choices.
+              * 'figure_svg': Complete inline valid SVG code for the Problem Figure (viewBox="0 0 320 80", width="320", height="80")
+              * 'option_a', 'option_b', 'option_c', 'option_d': Each must be complete inline valid SVG code (viewBox="0 0 70 70", width="70", height="70")
               Topics for Q43-Q50: Figure Series, Pattern Completion, 3x3 Figure Matrix, Cube / Dice unfolding, Paper Folding & Cutting, Embedded shapes.
 
             All questions must explain all 4 options in 'option_hints'.
@@ -298,7 +308,7 @@ def generate_full_100_exam(client, target_date_str, set_num, title_str):
             - Unit 3: Natural Resource, Environment, Climate Change & DRM (10 Qs, Q61-Q70): IPNM, IPM principles, Organic certification, NAPA/LAPA, Crop Insurance (80% premium subsidy), agro-biodiversity.
             - Unit 4 (First 5 Qs, Q71-Q75): Constitution agriculture rights (Art 36), 16th Plan agri targets, ADS (2015-2035) 4 pillars & flagship programs (VADEP).
 
-            Exam Tags: Use 'Koshi Province PSC 2080', 'Bagmati PSC 2081', 'Sudurpaschim PSC 2079', 'CARE Kathmandu Old Set', 'Agri Nepal Loksewa'.
+            Exam Tags: 'Koshi Province PSC 2080', 'Bagmati PSC 2081', 'Sudurpaschim PSC 2079', 'CARE Kathmandu Old Set', 'Agri Nepal Loksewa'.
             Language: English.
             'is_figure_option': 0, 'figure_svg': null.
             MANDATORY: Provide clear explanation of all 4 options in 'option_hints'.
@@ -329,20 +339,43 @@ def generate_full_100_exam(client, target_date_str, set_num, title_str):
         }
     ]
 
-    all_100 = []
-    for b in batches:
-        comp = client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
-            messages=[{"role": "user", "content": b["prompt"]}],
-            response_format={"type": "json_object"}
-        )
-        content = comp.choices[0].message.content
-        data = json.loads(content)
-        q_list = data if isinstance(data, list) else data.get("questions", list(data.values())[0])
-        all_100.extend(q_list)
-        time.sleep(0.4)
+    candidate_models = [preferred_model, "llama-3.1-8b-instant", "openai/gpt-oss-120b", "openai/gpt-oss-20b"]
+    candidate_models = list(dict.fromkeys(candidate_models))
 
-    # Store in SQLite
+    all_100 = []
+    active_model = candidate_models[0]
+
+    for b_idx, b in enumerate(batches):
+        success = False
+        last_err = None
+
+        for model_to_try in candidate_models:
+            try:
+                comp = client.chat.completions.create(
+                    model=model_to_try,
+                    messages=[{"role": "user", "content": b["prompt"]}],
+                    response_format={"type": "json_object"}
+                )
+                content = comp.choices[0].message.content
+                data = json.loads(content)
+                q_list = data if isinstance(data, list) else data.get("questions", list(data.values())[0])
+                all_100.extend(q_list)
+                active_model = model_to_try
+                success = True
+                break
+            except Exception as e:
+                last_err = e
+                if "404" in str(e) or "model_not_found" in str(e):
+                    continue
+                else:
+                    raise e
+
+        if not success:
+            raise RuntimeError(f"Failed to generate batch {b_idx + 1}. Last error: {last_err}")
+            
+        time.sleep(0.3)
+
+    # Save to SQLite
     with get_db() as conn:
         cursor = conn.cursor()
         cursor.execute(
@@ -365,10 +398,10 @@ def generate_full_100_exam(client, target_date_str, set_num, title_str):
             ))
         conn.commit()
 
-    return exam_id, len(all_100)
+    return exam_id, len(all_100), active_model
 
 # =====================================================================
-# 5. SIDEBAR NAVIGATION & REAL-TIME CLOCK
+# 5. SIDEBAR NAVIGATION
 # =====================================================================
 st.sidebar.markdown("<h2 style='color:#10b981; margin-bottom:0;'>🌱 AgriLoksewa 7th</h2>", unsafe_allow_html=True)
 st.sidebar.caption("Nepal Krishi Sewa (Gazetted 3rd Class / 7th Level)")
@@ -418,7 +451,7 @@ if menu == "📝 Attempt 100-Question Exam":
     if f"user_ans_{selected_exam_id}" not in st.session_state:
         st.session_state[f"user_ans_{selected_exam_id}"] = {q['q_num']: None for q in questions}
 
-    # Syllabus Blueprint Banner
+    # Blueprint Statistics Bar
     c1, c2, c3, c4 = st.columns(4)
     c1.markdown("<div style='background:#f1f5f9; padding:10px; border-radius:8px; text-align:center;'><b>Total Questions:</b> 100</div>", unsafe_allow_html=True)
     c2.markdown("<div style='background:#fef3c7; padding:10px; border-radius:8px; text-align:center;'><b>Time:</b> 90 Minutes</div>", unsafe_allow_html=True)
@@ -426,7 +459,7 @@ if menu == "📝 Attempt 100-Question Exam":
     c4.markdown("<div style='background:#ecfdf5; padding:10px; border-radius:8px; text-align:center;'><b>Pass Mark:</b> 40.0</div>", unsafe_allow_html=True)
     st.markdown("<br>", unsafe_allow_html=True)
 
-    # Sidebar Progress & Palette
+    # Sidebar Progress & Question Palette
     st.sidebar.markdown("### 🧭 Question Palette (1-100)")
     ans_count = sum(1 for v in st.session_state[f"user_ans_{selected_exam_id}"].values() if v is not None)
     st.sidebar.progress(ans_count / len(questions), text=f"Answered: {ans_count} / {len(questions)}")
@@ -458,7 +491,6 @@ if menu == "📝 Attempt 100-Question Exam":
             </div>
             """, unsafe_allow_html=True)
 
-            # Question SVG (if any)
             fig_svg = safe_get(q, 'figure_svg')
             if fig_svg and str(fig_svg).strip().startswith("<svg"):
                 st.components.v1.html(fig_svg, height=95)
@@ -466,7 +498,6 @@ if menu == "📝 Attempt 100-Question Exam":
             current_choice = st.session_state[f"user_ans_{selected_exam_id}"].get(q_num, None)
             is_fig_opt = bool(safe_get(q, 'is_figure_option', 0))
 
-            # Non-Verbal IQ Figure Options
             if is_fig_opt:
                 st.markdown("**Choose the matching figure:**")
                 fA, fB, fC, fD = st.columns(4)
@@ -498,8 +529,6 @@ if menu == "📝 Attempt 100-Question Exam":
                     horizontal=True
                 )
                 st.session_state[f"user_ans_{selected_exam_id}"][q_num] = chosen
-
-            # Text Options
             else:
                 opts = {"A": q['option_a'], "B": q['option_b'], "C": q['option_c'], "D": q['option_d']}
                 idx_val = ["A", "B", "C", "D"].index(current_choice) if current_choice in ["A", "B", "C", "D"] else None
@@ -516,7 +545,7 @@ if menu == "📝 Attempt 100-Question Exam":
 
             st.write("---")
 
-        submitted = st.form_submit_button("🏁 Final Submit & Compute PSC Official Score", type="primary", use_container_width=True)
+        submitted = st.form_submit_button("🏁 Final Submit & Compute Official Score", type="primary", use_container_width=True)
 
         if submitted:
             correct_cnt = 0
@@ -590,7 +619,7 @@ elif menu == "📖 Review Exam & Option Hints":
         st.markdown(f"""
         <div style="background:#f8fafc; border:1px solid #cbd5e1; border-radius:8px; padding:10px 14px; margin-bottom:15px;">
             <b>Latest Attempt:</b> {attempt['attempt_date']} | <b>Score:</b> {attempt['score']}/100 | 
-            <b>Correct:</b> {attempt['correct_count']} | <b>Wrong:</b> {attempt['wrong_count']} | <b>Pass Status:</b> {'PASS ✅' if attempt['is_passed'] else 'FAIL ❌'}
+            <b>Correct:</b> {attempt['correct_count']} | <b>Wrong:</b> {attempt['wrong_count']} | <b>Status:</b> {'QUALIFIED ✅' if attempt['is_passed'] else 'NOT QUALIFIED ❌'}
         </div>
         """, unsafe_allow_html=True)
 
@@ -614,7 +643,6 @@ elif menu == "📖 Review Exam & Option Hints":
         with st.expander(f"Q{q_no}. {q['question_text']} [{status_text}]", expanded=False):
             st.markdown(f'<span class="badge {badge_class}">{cat}</span> <span class="badge badge-src">{exam_src}</span>', unsafe_allow_html=True)
 
-            # Problem Figure
             fig_svg = safe_get(q, 'figure_svg')
             if fig_svg and str(fig_svg).strip().startswith("<svg"):
                 st.components.v1.html(fig_svg, height=95)
@@ -654,7 +682,7 @@ elif menu == "📖 Review Exam & Option Hints":
             </div>
             """, unsafe_allow_html=True)
 
-            # ALL 4 OPTIONS EXPLANATION
+            # Option Hints Breakdown
             opt_hints_raw = safe_get(q, 'option_hints')
             if opt_hints_raw:
                 try:
@@ -673,16 +701,31 @@ elif menu == "📖 Review Exam & Option Hints":
 # =====================================================================
 elif menu == "⚡ Generate Next Set / Instant Creator":
     st.markdown('<div class="main-title">⚡ Instant Exam Creator & Next-Set Engine</div>', unsafe_allow_html=True)
-    st.caption("Generate a 100% fresh, non-repeating 100-question paper strictly mapped to the Loksewa syllabus.")
+    st.caption("Generate a fresh, non-repeating 100-question paper strictly mapped to the Loksewa syllabus.")
 
     next_set = get_next_set_number()
     today_str = get_today_nepal_str()
 
-    st.info(f"Upcoming Set: **Set #{next_set}** | Today's Date: **{today_str}**")
+    st.info(f"Upcoming Set: **Set #{next_set}** | Date: **{today_str}**")
 
     saved_key = st.secrets.get("GROQ_API_KEY", os.environ.get("GROQ_API_KEY", ""))
-    api_key = st.text_input("Groq API Key (Llama 3.3 70B):", type="password", value=saved_key)
-    
+    api_key = st.text_input("Groq API Key:", type="password", value=saved_key)
+
+    selected_model = "llama-3.1-8b-instant"
+    if api_key:
+        try:
+            from groq import Groq
+            temp_client = Groq(api_key=api_key)
+            avail_models = get_available_groq_models(temp_client)
+            default_idx = 0
+            if "llama-3.1-8b-instant" in avail_models:
+                default_idx = avail_models.index("llama-3.1-8b-instant")
+            selected_model = st.selectbox("Select Active Groq Model:", avail_models, index=default_idx)
+        except Exception:
+            selected_model = st.selectbox("Select Groq Model:", ["llama-3.1-8b-instant", "openai/gpt-oss-120b", "openai/gpt-oss-20b"])
+    else:
+        st.caption("Enter your Groq API key above to load available models.")
+
     colA, colB = st.columns(2)
     with colA:
         target_set_num = st.number_input("Set Number:", value=next_set, min_value=1, step=1)
@@ -691,11 +734,11 @@ elif menu == "⚡ Generate Next Set / Instant Creator":
 
     st.markdown("""
     **What this generator guarantees:**
-    - 25 GK Questions (Nepali, Census 2078, Constitution, 16th Plan, Budgeting, Civil Service Act)
-    - 25 IQ Questions (17 Verbal/Numerical + 8 Non-Verbal with native SVG Problem Figures and SVG Option Figures)
-    - 50 Technical Agriculture Questions (APP, Extension, NAPA/LAPA, ADS, Seeds Act, Agronomy, Soil pH, Crop Protection)
-    - Hints describing why every option (A, B, C, D) is correct or incorrect.
-    - Zero repetition of previously generated questions.
+    - **25 GK Questions:** Nepali Unicode, Census 2078, Constitution, 16th Plan, Budgeting, Civil Service Act.
+    - **25 IQ Questions:** 17 Verbal/Numerical + 8 Non-Verbal with native SVG Problem Figures and SVG Option Figures.
+    - **50 Technical Agriculture Questions:** 5 History/Status, 5 Research/Extension, 10 Natural Resources/Climate/DRM, 10 Legislations/Trade, 20 Agri Technology & Management.
+    - Hints detailing why every option (A, B, C, D) is correct or incorrect.
+    - Excludes previously asked question stems to eliminate repetition.
     """)
 
     if st.button("➡️ Generate Next Non-Repeating Exam Set", type="primary", use_container_width=True):
@@ -706,14 +749,14 @@ elif menu == "⚡ Generate Next Set / Instant Creator":
         try:
             from groq import Groq
             client = Groq(api_key=api_key)
-            prog = st.progress(0, text="Querying database to exclude past questions stems...")
+            prog = st.progress(0, text="Checking database to exclude past questions...")
 
-            with st.spinner(f"Generating Set #{target_set_num} across 4 batches with SVG figures..."):
-                prog.progress(20, text="Generating Batch 1 (25 GK)...")
-                new_id, total_q = generate_full_100_exam(client, today_str, target_set_num, target_title)
-                prog.progress(100, text="Done!")
+            with st.spinner(f"Generating Set #{target_set_num} using model '{selected_model}'..."):
+                prog.progress(20, text="Generating batches & SVG figures...")
+                new_id, total_q, used_model = generate_full_100_exam(client, today_str, target_set_num, target_title, selected_model)
+                prog.progress(100, text="Complete!")
 
-            st.success(f"🎉 Successfully generated Set #{target_set_num} with {total_q} questions!")
+            st.success(f"🎉 Successfully generated Set #{target_set_num} with {total_q} questions using `{used_model}`!")
             st.info("Switch to the **'📝 Attempt 100-Question Exam'** tab to take the test now!")
         except Exception as e:
             st.error(f"Generation error: {e}")
@@ -734,7 +777,7 @@ elif menu == "📊 Score History & Analytics":
         ''').fetchall()
 
     if not attempts:
-        st.info("No exam attempts recorded yet. Attempt an exam first to see analytics.")
+        st.info("No exam attempts recorded yet. Attempt an exam first to view analytics.")
         st.stop()
 
     df = pd.DataFrame([dict(a) for a in attempts])
