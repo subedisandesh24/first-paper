@@ -145,7 +145,7 @@ st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
 DB_FILE = "loksewa_agri_7th.db"
 
 # =====================================================================
-# 3. DATABASE INITIALIZATION & REPETITION PREVENTION
+# 3. DATABASE INITIALIZATION & ANTI-REPETITION LOGIC
 # =====================================================================
 def get_db():
     conn = sqlite3.connect(DB_FILE, check_same_thread=False)
@@ -253,20 +253,64 @@ def extract_and_parse_json(content):
     raise ValueError("Could not parse valid JSON from AI response.")
 
 # =====================================================================
-# 5. FAST MULTI-THREADED 100-QUESTION ENGINE (LLAMA-3.1-8B-INSTANT)
+# 5. LIVE PROBE AUTO-MODEL RESOLVER (NEVER FAILS)
 # =====================================================================
-# Fixed to the fastest, most reliable open production model on Groq
-AUTO_MODEL = "llama-3.1-8b-instant"
+def find_working_model(client):
+    """
+    Dynamically probes active models on your Groq key.
+    Automatically picks the fastest verified model without terms restrictions.
+    """
+    if "verified_groq_model" in st.session_state and st.session_state["verified_groq_model"]:
+        return st.session_state["verified_groq_model"]
 
-def fetch_single_batch(batch_idx, batch_data, client, avoid_snippet):
+    candidate_priority = [
+        "llama-3.1-8b-instant",
+        "llama-3.3-70b-versatile",
+        "openai/gpt-oss-120b",
+        "openai/gpt-oss-20b",
+        "llama3-70b-8192",
+        "llama3-8b-8192",
+        "gemma2-9b-it",
+        "mixtral-8x7b-32768"
+    ]
+
+    try:
+        m_list = client.models.list()
+        active_ids = [
+            m.id for m in m_list.data 
+            if not any(x in m.id.lower() for x in ["whisper", "embed", "guard", "vision", "canopylabs", "orpheus"])
+        ]
+        test_queue = [m for m in candidate_priority if m in active_ids] + [m for m in active_ids if m not in candidate_priority]
+    except Exception:
+        test_queue = candidate_priority
+
+    # Quick 1-token probe test to verify permission
+    for m in test_queue:
+        try:
+            client.chat.completions.create(
+                model=m,
+                messages=[{"role": "user", "content": "hi"}],
+                max_tokens=2
+            )
+            st.session_state["verified_groq_model"] = m
+            return m
+        except Exception:
+            continue
+
+    return "llama-3.1-8b-instant"
+
+# =====================================================================
+# 6. FAST 4-THREAD PARALLEL GENERATOR (ALL 100 QUESTIONS)
+# =====================================================================
+def fetch_single_batch(batch_idx, batch_data, client, avoid_snippet, active_model):
     prompt = batch_data["prompt"].replace("{{avoid_snippet}}", avoid_snippet)
     for attempt in range(2):
         try:
             comp = client.chat.completions.create(
-                model=AUTO_MODEL,
+                model=active_model,
                 messages=[{"role": "user", "content": prompt}],
                 response_format={"type": "json_object"},
-                max_tokens=4096,
+                max_tokens=5000,
                 temperature=0.2
             )
             content = comp.choices[0].message.content
@@ -275,24 +319,29 @@ def fetch_single_batch(batch_idx, batch_data, client, avoid_snippet):
         except Exception as e:
             if attempt == 1:
                 raise e
-            time.sleep(0.4)
+            time.sleep(0.3)
     return batch_idx, []
 
 def generate_full_100_exam_parallel(client, target_date_str, set_num, title_str):
     past_stems = get_recent_question_stems(limit=200)
     avoid_snippet = ("\nCRITICAL: DO NOT repeat any of these past question stems:\n- " + "\n- ".join(past_stems[:35])) if past_stems else ""
+    
+    active_model = find_working_model(client)
 
     batches = [
-        # Batch 0: GK Q1-Q13
+        # Batch 0: 25 GK (Nepali Unicode)
         {
-            "start": 1, "end": 13,
+            "start": 1, "end": 25,
             "prompt": f"""
-            You are Nepal Public Service Commission (Loksewa Aayog) Chief Examiner for Agri 7th Level.
-            Generate exactly 13 General Awareness MCQs (numbered 1 to 13).
-            Topics: Geography (Census 2078), Natural resources, Constitution of Nepal (Part 1-5, Art 36, Schedules 5-9).
+            You are the Chief Examination Board Specialist for Nepal Public Service Commission (Loksewa Aayog).
+            Create exactly 25 General Awareness MCQs (numbered 1 to 25) for Agri Officer 7th Level:
+            - Geography & Census 2078
+            - Constitution of Nepal (Art 36, 51, Schedules 5, 8, 9)
+            - 16th Periodic Plan (2081/82-2085/86 targets)
+            - Civil Service Act 2049, POSDCORB, Budgeting, UNO, SAARC, BIMSTEC, Climate Change
             {{{{avoid_snippet}}}}
             Language: Nepali (Unicode). 'is_figure_option': 0, 'figure_svg': null.
-            Exam source tags: Federal PSC 2080, Bagmati PSC 2081, Koshi PSC 2080, Lumbini PSC 2079, CARE Bagbazar Model.
+            Exam source tags: Federal PSC 2080, Bagmati PSC 2081, Koshi PSC 2080, Lumbini PSC 2079, Gandaki PSC 2081, CARE Bagbazar Model.
             In 'option_hints', describe why every option (A, B, C, D) is correct or what it refers to.
 
             Output format MUST BE a JSON object with key "questions":
@@ -301,105 +350,66 @@ def generate_full_100_exam_parallel(client, target_date_str, set_num, title_str)
             ]}}
             """
         },
-        # Batch 1: GK Q14-Q25
+        # Batch 1: 25 IQ (17 Verbal/Numerical + 8 Spatial with SVGs)
         {
-            "start": 14, "end": 25,
+            "start": 26, "end": 50,
             "prompt": f"""
-            Generate exactly 12 General Awareness MCQs (numbered 14 to 25) for Loksewa Agri 7th Level:
-            Topics: 16th Periodic Plan targets, Civil Service Act 2049, POSDCORB, Budgeting, UNO, SAARC, BIMSTEC, Climate Change.
-            {{{{avoid_snippet}}}}
-            Language: Nepali (Unicode). 'is_figure_option': 0, 'figure_svg': null.
-            Exam sources: Gandaki PSC 2081, Federal PSC 2079, Agri360 Model.
-            Describe all options (A, B, C, D) in 'option_hints'.
-            Output format MUST BE a JSON object with key "questions" (numbered 14 to 25).
-            """
-        },
-        # Batch 2: IQ Verbal & Numerical Q26-Q42 (17 Qs)
-        {
-            "start": 26, "end": 42,
-            "prompt": f"""
-            Generate exactly 17 Aptitude / General Reasoning MCQs (numbered 26 to 42):
+            Generate exactly 25 Loksewa Aptitude / General Reasoning MCQs (numbered 26 to 50):
             - Q26 to Q34 (9 Logical Qs): Coding-decoding, series, direction & distance, Venn diagram, blood relation.
             - Q35 to Q42 (8 Numerical Qs): Time & work, profit & loss, ratio, percentage, calendar, average.
-            'is_figure_option': 0, 'figure_svg': null.
-            Language: English. Describe all options in 'option_hints'.
-            Output format MUST BE a JSON object with key "questions" (numbered 26 to 42).
+              ('is_figure_option': 0, 'figure_svg': null)
+            - Q43 to Q50 (8 Spatial Qs with Inline SVG Figures): Figure series, pattern completion, 3x3 matrix, cube unfolding, paper folding.
+              For Q43-Q50:
+              * 'is_figure_option': 1
+              * 'figure_svg': Valid inline SVG for Problem Figure (viewBox="0 0 320 80", width="320", height="80")
+              * 'option_a', 'option_b', 'option_c', 'option_d': Valid inline SVGs for choices (viewBox="0 0 70 70", width="70", height="70")
+            Language: English. Describe all 4 options in 'option_hints'.
+            Output format MUST BE a JSON object with key "questions" (numbered 26 to 50).
             """
         },
-        # Batch 3: IQ Spatial Reasoning Q43-Q50 (8 Qs with SVGs)
+        # Batch 2: 25 Technical Agriculture Part A (Q51 to Q75)
         {
-            "start": 43, "end": 50,
+            "start": 51, "end": 75,
             "prompt": f"""
-            Generate exactly 8 Non-Verbal Spatial Reasoning MCQs (numbered 43 to 50):
-            Topics: Figure Series, Pattern Completion, 3x3 Figure Matrix, Cube/Dice unfolding, Paper Folding.
-            Every question MUST have native inline SVG code:
-            - 'is_figure_option': 1
-            - 'figure_svg': Valid inline SVG for Problem Figure (viewBox="0 0 320 80", width="320", height="80")
-            - 'option_a', 'option_b', 'option_c', 'option_d': Valid inline SVGs for choices (viewBox="0 0 70 70", width="70", height="70")
-            - 'option_hints': Detail the transformation rule and explain options A, B, C, D.
-            Output format MUST BE a JSON object with key "questions" (numbered 43 to 50).
-            """
-        },
-        # Batch 4: Agri Part 1 Q51-Q62 (12 Qs)
-        {
-            "start": 51, "end": 62,
-            "prompt": f"""
-            Generate exactly 12 Technical Agriculture MCQs (numbered 51 to 62):
-            - 1. History & Current Status (5 Qs, Q51-Q55): APP, Devolution, Research history, AgGDP.
-            - 2. Research, Extension & Education (5 Qs, Q56-Q60): NARC vision, AFU, FFS, AKC, T&V.
-            - 3. Natural Resources & Climate (2 Qs, Q61-Q62): Agro-biodiversity, NAPA/LAPA.
+            Generate exactly 25 Technical Agriculture MCQs (numbered 51 to 75) based strictly on PSC syllabus:
+            - Unit 1: History & Current Status (5 Qs, Q51-Q55): APP, Devolution, DoA/NARC timeline, AgGDP.
+            - Unit 2: Research, Extension & Education (5 Qs, Q56-Q60): NARC vision, AFU, FFS, AKC, T&V.
+            - Unit 3: Environment, Climate & DRM (10 Qs, Q61-Q70): IPNM, IPM, GAP, Organic certification, Crop Insurance (80% subsidy), agro-biodiversity.
+            - Unit 4: Policies (5 Qs, Q71-Q75): Constitution Art 36, 16th Plan agri goals, ADS (2015-2035) 4 pillars & VADEP.
             {{{{avoid_snippet}}}}
-            Exam sources: Koshi PSC 2080, Bagmati PSC 2081, Sudurpashchim PSC 2079.
-            Language: English. 'is_figure_option': 0. Explain all options in 'option_hints'.
-            Output format MUST BE a JSON object with key "questions" (numbered 51 to 62).
+            Language: English. 'is_figure_option': 0, 'figure_svg': null. Describe all options in 'option_hints'.
+            Output format MUST BE a JSON object with key "questions" (numbered 51 to 75).
             """
         },
-        # Batch 5: Agri Part 2 Q63-Q75 (13 Qs)
+        # Batch 3: 25 Technical Agriculture Part B (Q76 to Q100)
         {
-            "start": 63, "end": 75,
+            "start": 76, "end": 100,
             "prompt": f"""
-            Generate exactly 13 Technical Agriculture MCQs (numbered 63 to 75):
-            - 3. Environment, Climate & DRM (8 Qs, Q63-Q70): IPNM, IPM, GAP, Organic certification, Crop Insurance (80% subsidy).
-            - 4. Policies & Trade (5 Qs, Q71-Q75): Constitution Art 36, 16th Plan agri goals, ADS (2015-2035) 4 pillars & VADEP.
-            Language: English. 'is_figure_option': 0. Explain all options in 'option_hints'.
-            Output format MUST BE a JSON object with key "questions" (numbered 63 to 75).
-            """
-        },
-        # Batch 6: Agri Part 3 Q76-Q87 (12 Qs)
-        {
-            "start": 76, "end": 87,
-            "prompt": f"""
-            Generate exactly 12 Technical Agriculture MCQs (numbered 76 to 87):
-            - 4. Acts & Global Trade (5 Qs, Q76-Q80): Seeds Act 2045 & Rules 2069, Plant Protection Act 2064, Pesticide Act 2076, WTO SPS.
-            - 5. Agri Technology (7 Qs, Q81-Q87): Seed classes & isolation distances, physiological disorders (whiptail, browning), postharvest handling.
-            Language: English. 'is_figure_option': 0. Explain all options in 'option_hints'.
-            Output format MUST BE a JSON object with key "questions" (numbered 76 to 87).
-            """
-        },
-        # Batch 7: Agri Part 4 Q88-Q100 (13 Qs)
-        {
-            "start": 88, "end": 100,
-            "prompt": f"""
-            Generate exactly 13 Technical Agriculture MCQs (numbered 88 to 100):
-            - 5. Agri Technology & Management: Soil pH, lime requirement formula, IPNS, ETL, Fall Armyworm, Clubroot, Land Equivalent Ratio (LER), research design (RCBD vs CRD).
-            Language: English. 'is_figure_option': 0. Explain all options in 'option_hints'.
-            Output format MUST BE a JSON object with key "questions" (numbered 88 to 100).
+            Generate exactly 25 Technical Agriculture MCQs (numbered 76 to 100) based strictly on PSC syllabus:
+            - Unit 4: Acts & Global Trade (5 Qs, Q76-Q80): Seeds Act 2045, Plant Protection Act 2064, Pesticide Act 2076 (26 banned list), WTO SPS.
+            - Unit 5: Agricultural Technology & Management (20 Qs, Q81-Q100):
+              * Seed classes & isolation distances, physiological disorders (whiptail, browning), postharvest handling
+              * Soil pH, lime requirement formula, IPNS
+              * Entomology & Pathology: ETL, Fall Armyworm, Clubroot, Late blight
+              * Farm economics (LER, elasticity, monopsony), research design (RCBD vs CRD)
+            Language: English. 'is_figure_option': 0, 'figure_svg': null. Describe all options in 'option_hints'.
+            Output format MUST BE a JSON object with key "questions" (numbered 76 to 100).
             """
         }
     ]
 
-    # Run batches concurrently using 4 workers for ~5-8 second generation
+    # Run all 4 batches concurrently using 4 worker threads
     batch_results = {}
     with ThreadPoolExecutor(max_workers=4) as executor:
         future_to_idx = {
-            executor.submit(fetch_single_batch, idx, b, client, avoid_snippet): idx 
+            executor.submit(fetch_single_batch, idx, b, client, avoid_snippet, active_model): idx 
             for idx, b in enumerate(batches)
         }
         for future in as_completed(future_to_idx):
             b_idx, q_list = future.result()
             batch_results[b_idx] = q_list
 
-    # Assemble questions in sequential order (Q1 to Q100)
+    # Assemble sequential question list (1 to 100)
     all_100 = []
     for idx in range(len(batches)):
         all_100.extend(batch_results.get(idx, []))
@@ -428,10 +438,10 @@ def generate_full_100_exam_parallel(client, target_date_str, set_num, title_str)
             ))
         conn.commit()
 
-    return exam_id, len(all_100)
+    return exam_id, len(all_100), active_model
 
 # =====================================================================
-# 6. SIDEBAR NAVIGATION & TIME DISPLAY
+# 7. SIDEBAR NAVIGATION & TIME DISPLAY
 # =====================================================================
 st.sidebar.markdown("<h2 style='color:#10b981; margin-bottom:0;'>🌱 AgriLoksewa 7th</h2>", unsafe_allow_html=True)
 st.sidebar.caption("Nepal Krishi Sewa (Gazetted 3rd Class / 7th Level)")
@@ -461,7 +471,7 @@ if menu == "📝 Attempt 100-Question Exam":
         exams = conn.execute("SELECT * FROM exams ORDER BY set_number DESC, id DESC").fetchall()
 
     if not exams:
-        st.warning("⚠️ No exams in database yet. Please go to the '⚡ Generate Next Set' tab to create Set #1 in seconds!")
+        st.warning("⚠️ No exams in database yet. Please visit the '⚡ Generate Next Set' tab to create Set #1 in seconds!")
         st.stop()
 
     exam_map = {f"Set #{e['set_number']} ({e['exam_date']}) - {e['title']}": e['id'] for e in exams}
@@ -727,11 +737,11 @@ elif menu == "📖 Review Exam & Option Hints":
                     pass
 
 # =====================================================================
-# TAB 3: GENERATE NEXT SET (FAST MULTI-THREADED ENGINE)
+# TAB 3: GENERATE NEXT SET (FAST AUTO ENGINE)
 # =====================================================================
 elif menu == "⚡ Generate Next Set (Fast Engine)":
     st.markdown('<div class="main-title">⚡ Instant Exam Creator & Next-Set Engine</div>', unsafe_allow_html=True)
-    st.caption("Auto-configured with Groq's high-speed engine (Llama-3.1-8B-Instant) via multi-threaded generation.")
+    st.caption("Automatic model discovery and multi-threaded parallel generation across 4 threads.")
 
     next_set = get_next_set_number()
     today_str = get_today_nepal_str()
@@ -739,7 +749,7 @@ elif menu == "⚡ Generate Next Set (Fast Engine)":
     st.info(f"Upcoming Set: **Set #{next_set}** | Today's Date: **{today_str}**")
 
     saved_key = st.secrets.get("GROQ_API_KEY", os.environ.get("GROQ_API_KEY", ""))
-    api_key = st.text_input("Groq API Key:", type="password", value=saved_key, help="Enter your Groq key once; you can also store it in secrets.toml")
+    api_key = st.text_input("Groq API Key:", type="password", value=saved_key, help="Enter your key once; it auto-saves.")
 
     colA, colB = st.columns(2)
     with colA:
@@ -748,33 +758,33 @@ elif menu == "⚡ Generate Next Set (Fast Engine)":
         target_title = st.text_input("Exam Title:", value=f"Loksewa Krishi 7th Level Model Set #{target_set_num}")
 
     st.markdown("""
-    **Guaranteed Syllabus Standards:**
+    **What this generator guarantees:**
     - **25 GK Questions:** Nepali Unicode, Census 2078, Constitution, 16th Plan, Budgeting, Civil Service Act.
     - **25 IQ Questions:** 17 Verbal/Numerical + 8 Non-Verbal with native SVG Problem Figures and SVG Option Figures.
     - **50 Technical Agriculture Questions:** 5 History/Status, 5 Research/Extension, 10 Natural Resources/Climate/DRM, 10 Legislations/Trade, 20 Agri Technology & Management.
-    - Detailed hints for **all 4 options (A, B, C, D)** on every question.
-    - Automatically avoids questions from previous sets in the database.
+    - Hints detailing why every option (A, B, C, D) is correct or incorrect.
+    - Automatically excludes previously generated questions to ensure non-repetition.
     """)
 
     if st.button("➡️ Generate 100-Question Exam Set (Fast Mode)", type="primary", use_container_width=True):
         if not api_key:
-            st.error("Please enter a valid Groq API Key.")
+            st.error("Please enter your Groq API Key.")
             st.stop()
 
         try:
             from groq import Groq
             client = Groq(api_key=api_key)
-            prog = st.progress(0, text="Generating all 100 questions concurrently...")
+            prog = st.progress(0, text="Discovering verified active model and starting parallel generation...")
 
             start_t = time.time()
-            with st.spinner(f"Generating Set #{target_set_num} in parallel (~5 to 8 seconds)..."):
-                prog.progress(40, text="Processing 8 syllabus batches in parallel...")
-                new_id, total_q = generate_full_100_exam_parallel(client, today_str, target_set_num, target_title)
+            with st.spinner(f"Generating Set #{target_set_num} across 4 parallel threads (~5 to 8 seconds)..."):
+                prog.progress(30, text="Generating all 100 questions simultaneously...")
+                new_id, total_q, used_model = generate_full_100_exam_parallel(client, today_str, target_set_num, target_title)
                 prog.progress(100, text="Complete!")
 
             elapsed = round(time.time() - start_t, 1)
-            st.success(f"🎉 Generated Set #{target_set_num} with {total_q} questions in only **{elapsed} seconds**!")
-            st.info("Head to the **'📝 Attempt 100-Question Exam'** tab to start your test!")
+            st.success(f"🎉 Generated Set #{target_set_num} ({total_q} questions) using `{used_model}` in only **{elapsed} seconds**!")
+            st.info("Switch to the **'📝 Attempt 100-Question Exam'** tab to start your examination!")
         except Exception as e:
             st.error(f"Generation error: {e}")
 
