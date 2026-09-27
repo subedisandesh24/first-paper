@@ -225,15 +225,22 @@ def get_next_set_number():
         return (val + 1) if val else 1
 
 # =====================================================================
-# 4. GROQ MODEL RESOLVER & ROBUST GENERATION PIPELINE
+# 4. GROQ VERIFIED SAFE-MODEL DISCOVERY & PIPELINE
 # =====================================================================
+# Strict whitelist of officially open, verified text-generation models on Groq
+VERIFIED_OPEN_MODELS = [
+    "llama-3.1-8b-instant",
+    "openai/gpt-oss-120b",
+    "openai/gpt-oss-20b",
+    "llama-3.3-70b-versatile"
+]
+
 def get_available_groq_models(client):
     try:
         m_list = client.models.list()
-        valid = [
-            m.id for m in m_list.data 
-            if not any(x in m.id.lower() for x in ["whisper", "embed", "guard", "vision", "safeguard"])
-        ]
+        raw_ids = [m.id for m in m_list.data]
+        # Only select models that are verified and active on the user's account
+        valid = [m for m in VERIFIED_OPEN_MODELS if m in raw_ids]
         return valid if valid else ["llama-3.1-8b-instant", "openai/gpt-oss-120b", "openai/gpt-oss-20b"]
     except Exception:
         return ["llama-3.1-8b-instant", "openai/gpt-oss-120b", "openai/gpt-oss-20b"]
@@ -365,7 +372,9 @@ def generate_full_100_exam(client, target_date_str, set_num, title_str, preferre
                 break
             except Exception as e:
                 last_err = e
-                if "404" in str(e) or "model_not_found" in str(e):
+                err_msg = str(e).lower()
+                # If model requires special terms acceptance or doesn't exist, try next candidate
+                if any(x in err_msg for x in ["terms", "404", "model_not_found", "model_terms_required"]):
                     continue
                 else:
                     raise e
@@ -720,9 +729,9 @@ elif menu == "⚡ Generate Next Set / Instant Creator":
             default_idx = 0
             if "llama-3.1-8b-instant" in avail_models:
                 default_idx = avail_models.index("llama-3.1-8b-instant")
-            selected_model = st.selectbox("Select Active Groq Model:", avail_models, index=default_idx)
+            selected_model = st.selectbox("Select Active Production Groq Model:", avail_models, index=default_idx)
         except Exception:
-            selected_model = st.selectbox("Select Groq Model:", ["llama-3.1-8b-instant", "openai/gpt-oss-120b", "openai/gpt-oss-20b"])
+            selected_model = st.selectbox("Select Active Production Groq Model:", ["llama-3.1-8b-instant", "openai/gpt-oss-120b", "openai/gpt-oss-20b"])
     else:
         st.caption("Enter your Groq API key above to load available models.")
 
