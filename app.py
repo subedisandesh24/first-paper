@@ -21,7 +21,7 @@ def get_today_nepal_str():
     return get_nepal_now().strftime("%Y-%m-%d")
 
 st.set_page_config(
-    page_title="Loksewa Krishi 7th Level Portal",
+    page_title="Loksewa Agri 7th Level Portal",
     page_icon="🌱",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -151,14 +151,14 @@ st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
 DB_FILE = "loksewa_agri_7th.db"
 
 # =====================================================================
-# 3. SILENT API KEY RESOLVER (NEVER EXPOSED IN UI)
+# 3. SILENT API KEY RESOLVER (HIDDEN FROM UI)
 # =====================================================================
 def get_groq_api_key():
-    """Silently retrieves API key from secrets or environment without rendering in UI."""
+    """Silently retrieves API key from secrets or environment."""
     return st.secrets.get("GROQ_API_KEY", os.environ.get("GROQ_API_KEY", ""))
 
 # =====================================================================
-# 4. DATABASE INITIALIZATION & INSTANT SEED (SET #1 READY)
+# 4. DATABASE INITIALIZATION (NO HARDCODED QUESTIONS)
 # =====================================================================
 def get_db():
     conn = sqlite3.connect(DB_FILE, check_same_thread=False)
@@ -174,74 +174,8 @@ def safe_get(row, key, default=None):
         pass
     return default
 
-def seed_instant_exam_set_1(conn):
-    cursor = conn.cursor()
-    cursor.execute("SELECT id FROM exams WHERE set_number = 1")
-    if cursor.fetchone():
-        return
-
-    today_str = get_today_nepal_str()
-    cursor.execute(
-        "INSERT INTO exams (exam_date, set_number, title, total_questions) VALUES (?, 1, ?, 100)",
-        (today_str, "Loksewa Krishi 7th Level Model Set #1")
-    )
-    exam_id = cursor.lastrowid
-
-    records = []
-    # 25 GK in Nepali
-    for i in range(1, 26):
-        records.append((
-            i, "GK", "General Awareness", "Federal PSC 2080", 0,
-            f"नेपालको संविधान, योजना तथा कृषि सामान्य ज्ञान सम्बन्धी आधिकारिक नमूना प्रश्न नं. {i}?",
-            None, f"विकल्प (A) - तथ्य {i}", f"विकल्प (B) - तथ्य {i}", f"विकल्प (C) - तथ्य {i}", f"विकल्प (D) - तथ्य {i}",
-            "A", f"प्रश्न {i} को आधिकारिक व्याख्या: सम्बन्धित संवैधानिक र नीतिगत प्रावधानको विश्लेषण।",
-            json.dumps({"A": "सहि संवैधानिक प्रावधान (CORRECT)", "B": "अन्य धारा वा पुरानो व्यवस्था", "C": "प्रदेश तहको व्यवस्था", "D": "अप्रासंगिक विकल्प"})
-        ))
-
-    # 25 IQ (17 Verbal/Numerical + 8 Spatial with SVGs)
-    for i in range(26, 43):
-        records.append((
-            i, "IQ", "Logical & Numerical", "PSC Model", 0,
-            f"Aptitude Question #{i}: In an agricultural production series, determine the missing value in sequence #{i}?",
-            None, "36 units", "42 units", "48 units", "54 units",
-            "B", "Calculated using standard arithmetic difference and ratio balance.",
-            json.dumps({"A": "Lower boundary deviation", "B": "Mathematically accurate value (CORRECT)", "C": "Upper boundary deviation", "D": "Unscaled sum"})
-        ))
-
-    svg_q = '<svg viewBox="0 0 320 80" width="320" height="80" xmlns="http://www.w3.org/2000/svg"><rect x="5" y="5" width="70" height="70" fill="#f8fafc" stroke="#334155" stroke-width="2" rx="4"/><circle cx="40" cy="40" r="22" fill="none" stroke="#0284c7" stroke-width="2.5"/><line x1="40" y1="40" x2="40" y2="18" stroke="#0f172a" stroke-width="3"/><rect x="85" y="5" width="70" height="70" fill="#f8fafc" stroke="#334155" stroke-width="2" rx="4"/><circle cx="120" cy="40" r="22" fill="none" stroke="#0284c7" stroke-width="2.5"/><line x1="120" y1="40" x2="142" y2="40" stroke="#0f172a" stroke-width="3"/><circle cx="120" cy="40" r="4" fill="#ef4444"/><rect x="165" y="5" width="70" height="70" fill="#f8fafc" stroke="#334155" stroke-width="2" rx="4"/><circle cx="200" cy="40" r="22" fill="none" stroke="#0284c7" stroke-width="2.5"/><line x1="200" y1="40" x2="200" y2="62" stroke="#0f172a" stroke-width="3"/><circle cx="200" cy="40" r="4" fill="#ef4444"/><circle cx="185" cy="40" r="3.5" fill="#10b981"/><rect x="245" y="5" width="70" height="70" fill="#f1f5f9" stroke="#059669" stroke-width="2" stroke-dasharray="4" rx="4"/><text x="272" y="48" font-size="28" font-weight="bold" fill="#059669">?</text></svg>'
-    svg_a = '<svg viewBox="0 0 70 70" width="70" height="70" xmlns="http://www.w3.org/2000/svg"><rect x="2" y="2" width="66" height="66" fill="#fff" stroke="#cbd5e1" stroke-width="2" rx="4"/><circle cx="35" cy="35" r="22" fill="none" stroke="#0284c7" stroke-width="2.5"/><line x1="35" y1="35" x2="13" y2="35" stroke="#0f172a" stroke-width="3"/><circle cx="35" cy="35" r="4" fill="#ef4444"/><circle cx="35" cy="20" r="3.5" fill="#10b981"/><circle cx="48" cy="35" r="3.5" fill="#10b981"/></svg>'
-    svg_b = '<svg viewBox="0 0 70 70" width="70" height="70" xmlns="http://www.w3.org/2000/svg"><rect x="2" y="2" width="66" height="66" fill="#fff" stroke="#cbd5e1" stroke-width="2" rx="4"/><circle cx="35" cy="35" r="22" fill="none" stroke="#0284c7" stroke-width="2.5"/><line x1="35" y1="35" x2="35" y2="13" stroke="#0f172a" stroke-width="3"/><circle cx="35" cy="35" r="4" fill="#ef4444"/><circle cx="35" cy="50" r="3.5" fill="#10b981"/></svg>'
-    svg_c = '<svg viewBox="0 0 70 70" width="70" height="70" xmlns="http://www.w3.org/2000/svg"><rect x="2" y="2" width="66" height="66" fill="#fff" stroke="#cbd5e1" stroke-width="2" rx="4"/><circle cx="35" cy="35" r="22" fill="none" stroke="#0284c7" stroke-width="2.5"/><line x1="35" y1="35" x2="13" y2="35" stroke="#0f172a" stroke-width="3"/><circle cx="35" cy="18" r="4" fill="#ef4444"/></svg>'
-    svg_d = '<svg viewBox="0 0 70 70" width="70" height="70" xmlns="http://www.w3.org/2000/svg"><rect x="2" y="2" width="66" height="66" fill="#fff" stroke="#cbd5e1" stroke-width="2" rx="4"/><circle cx="35" cy="35" r="22" fill="none" stroke="#0284c7" stroke-width="2.5"/><line x1="35" y1="35" x2="57" y2="35" stroke="#0f172a" stroke-width="3"/><circle cx="35" cy="35" r="4" fill="#ef4444"/><circle cx="48" cy="35" r="3.5" fill="#10b981"/></svg>'
-
-    for i in range(43, 51):
-        records.append((
-            i, "IQ", "Spatial Reasoning", "Federal PSC Spatial", 1,
-            f"Spatial Problem #{i}: Which figure completes the rotational sequence for Step 4?",
-            svg_q, svg_a, svg_b, svg_c, svg_d,
-            "A", "The pointer rotates 90 degrees clockwise at each step, while peripheral dots increase sequentially.",
-            json.dumps({"A": "Points left (270 deg) with 2 dots (CORRECT)", "B": "Points up (360 deg)", "C": "Displaced origin hub", "D": "Points right (step 2 position)"})
-        ))
-
-    # 50 Agriculture Technical
-    for i in range(51, 101):
-        records.append((
-            i, "Agri", "Technical Agriculture", "Federal PSC Krishi", 0,
-            f"Technical Agriculture Standard MCQ #{i} (Syllabus Units 1-5)?",
-            None, f"Agronomic standard A for #{i}", f"Agronomic standard B for #{i}", f"Agronomic standard C for #{i}", f"Agronomic standard D for #{i}",
-            "B", f"Core technical agronomic benchmark and verified PSC standard for Question {i}.",
-            json.dumps({"A": "Suboptimal practice", "B": "Official verified recommendation (CORRECT)", "C": "Contraindicated dosage", "D": "Obsolete historical norm"})
-        ))
-
-    for r in records:
-        cursor.execute('''
-            INSERT INTO questions 
-            (exam_id, q_num, category, sub_syllabus, exam_source, is_figure_option, question_text, figure_svg, option_a, option_b, option_c, option_d, correct_option, explanation, option_hints)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ''', (exam_id, r[0], r[1], r[2], r[3], r[4], r[5], r[6], r[7], r[8], r[9], r[10], r[11], r[12], r[13]))
-    conn.commit()
-
 def init_db():
+    """Creates schema without inserting any hardcoded questions."""
     with get_db() as conn:
         cursor = conn.cursor()
         cursor.execute('''
@@ -291,7 +225,6 @@ def init_db():
             )
         ''')
         conn.commit()
-        seed_instant_exam_set_1(conn)
 
 init_db()
 
@@ -300,16 +233,16 @@ def get_next_set_number():
         val = conn.execute("SELECT MAX(set_number) FROM exams").fetchone()[0]
         return (val + 1) if val else 1
 
-def get_recent_stems(limit=80):
+def get_recent_stems(limit=60):
     with get_db() as conn:
         rows = conn.execute("SELECT question_text FROM questions ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
         return [r[0][:40] for r in rows if r[0]]
 
 # =====================================================================
-# 5. DYNAMIC MODEL RESOLVER (NEVER THROWS 404/400)
+# 5. DYNAMIC MODEL RESOLVER (NEVER THROWS 404 OR 400)
 # =====================================================================
 def get_best_active_model(client):
-    """Probes available models with a 1-token test to guarantee zero 404 errors."""
+    """Probes Groq models with a 1-token test to find the active model."""
     if "active_groq_model" in st.session_state and st.session_state["active_groq_model"]:
         return st.session_state["active_groq_model"]
 
@@ -347,25 +280,17 @@ def get_best_active_model(client):
     return "openai/gpt-oss-20b"
 
 # =====================================================================
-# 6. RESILIENT SALVAGE JSON PARSER (NEVER FAILS ON CUT-OFF OUTPUTS)
+# 6. RESILIENT SALVAGE JSON PARSER
 # =====================================================================
 def extract_and_parse_json(content):
-    """
-    Robust multi-tier extractor:
-    1. Direct parse
-    2. Outer block match
-    3. Regex harvester (recovers individual questions even from truncated outputs)
-    """
+    """Extracts JSON, removing thoughts, markdown, or trailing strings."""
     if not content or not content.strip():
         return []
 
-    # Strip thinking tags from reasoning models
     content = re.sub(r'<think>[\s\S]*?</think>', '', content).strip()
-    # Strip markdown code blocks
     content = re.sub(r'^```(?:json)?\s*', '', content, flags=re.MULTILINE)
     content = re.sub(r'```\s*$', '', content, flags=re.MULTILINE).strip()
 
-    # Tier 1: Direct JSON parse
     try:
         data = json.loads(content)
         if isinstance(data, dict):
@@ -375,7 +300,6 @@ def extract_and_parse_json(content):
     except Exception:
         pass
 
-    # Tier 2: Extract outermost object or array
     m = re.search(r'(\{[\s\S]*\}|\[[\s\S]*\])', content)
     if m:
         try:
@@ -387,7 +311,6 @@ def extract_and_parse_json(content):
         except Exception:
             pass
 
-    # Tier 3: Regex Harvester (extracts every complete question block independently)
     q_pattern = re.compile(r'\{\s*"q_num"[\s\S]*?"question_text"[\s\S]*?"correct_option"\s*:\s*"[A-D]"[\s\S]*?\}')
     recovered = []
     for match in q_pattern.finditer(content):
@@ -398,21 +321,18 @@ def extract_and_parse_json(content):
         except Exception:
             pass
 
-    if recovered:
-        return recovered
-
-    return []
+    return recovered
 
 # =====================================================================
-# 7. STAGE 1: ULTRA-FAST 6-BATCH PARALLEL GENERATOR (~2 TO 3 SECONDS)
+# 7. STAGE 1: ULTRA-FAST QUESTION GENERATOR (~2 TO 3 SECONDS)
 # =====================================================================
-def fetch_mini_batch(prompt, client, active_model):
+def fetch_batch_questions(prompt, client, active_model):
     for _ in range(2):
         try:
             comp = client.chat.completions.create(
                 model=active_model,
                 messages=[
-                    {"role": "system", "content": "You are a PSC exam compiler. Return valid JSON only."},
+                    {"role": "system", "content": "You are a Nepal Public Service Commission (Loksewa Aayog) Chief Examination Officer. Return pure JSON only."},
                     {"role": "user", "content": prompt}
                 ],
                 max_tokens=4096,
@@ -425,58 +345,65 @@ def fetch_mini_batch(prompt, client, active_model):
             time.sleep(0.3)
     return []
 
-def generate_questions_fast(client, target_date_str, set_num, title_str):
-    past_stems = get_recent_stems(limit=30)
-    avoid_snippet = ("Avoid: " + "; ".join(past_stems[:8])) if past_stems else ""
+def generate_100_questions_fast(client, target_date_str, set_num, title_str):
+    past_stems = get_recent_stems(limit=40)
+    avoid_snippet = ("Avoid: " + "; ".join(past_stems[:10])) if past_stems else ""
     active_model = get_best_active_model(client)
 
-    # 6 Focused mini-batches stay well within token limits to prevent mid-stream cuts
+    # 4 Structured batches aligned strictly with Government of Nepal syllabi
     batches = [
-        # Batch 1: GK Q1-13 (Nepali)
-        f"""Generate 13 General Awareness MCQs (Q1 to Q13) for Nepal PSC Agri 7th in Nepali Unicode:
-Topics: Census 2078, Constitution (Art 36, 51, Schedules 5, 8, 9), Physical geography. {avoid_snippet}
-Output JSON format: {{"questions": [{{"q_num": 1, "category": "GK", "exam_source": "Federal PSC", "is_figure_option": 0, "figure_svg": null, "question_text": "...", "option_a": "...", "option_b": "...", "option_c": "...", "option_d": "...", "correct_option": "A"}}]}}""",
+        # Batch 1: 25 GK (Nepali Unicode) - Syllabus 1.1 to 1.16
+        f"""Generate exactly 25 General Awareness MCQs (Q1 to Q25) for Nepal PSC Agri 7th Level in Nepali Unicode.
+Strict Government Benchmarks:
+- Census 2078 (National Statistics Office)
+- Constitution of Nepal (Articles 36, 42, 51; Schedules 5, 8, 9)
+- 16th Periodic Plan (2081/82-2085/86 targets)
+- Civil Service Act 2049 & Rules 2050
+- Budgeting, Governance, UNO, BIMSTEC
+{avoid_snippet}
+ONLY output questions and options. NO explanations or hints.
+Output format: {{"questions": [{{"q_num": 1, "category": "GK", "sub_syllabus": "1.8 Constitution", "exam_source": "Federal PSC", "is_figure_option": 0, "figure_svg": null, "question_text": "...", "option_a": "...", "option_b": "...", "option_c": "...", "option_d": "...", "correct_option": "A"}}]}}""",
 
-        # Batch 2: GK Q14-25 (Nepali)
-        f"""Generate 12 General Awareness MCQs (Q14 to Q25) for Nepal PSC Agri 7th in Nepali Unicode:
-Topics: 16th Plan targets, Civil Service Act 2049, POSDCORB, Budgeting, UNO, BIMSTEC. {avoid_snippet}
-Output JSON format: {{"questions": [{{"q_num": 14, "category": "GK", "exam_source": "Bagmati PSC", "is_figure_option": 0, "figure_svg": null, "question_text": "...", "option_a": "...", "option_b": "...", "option_c": "...", "option_d": "...", "correct_option": "A"}}]}}""",
+        # Batch 2: 25 General Reasoning Test / IQ (Q26 to Q50)
+        f"""Generate exactly 25 Aptitude MCQs (Q26 to Q50) in English:
+- Q26 to Q42 (17 Verbal/Numerical Qs): Series, direction, coding, Venn, ratio, time & work, percentage. ('is_figure_option': 0, 'figure_svg': null)
+- Q43 to Q50 (8 Spatial Reasoning Qs): Figure series, pattern completion, 3x3 matrix, cube net unfolding.
+  MUST have compact inline SVGs: 'is_figure_option': 1, 'figure_svg': "<svg viewBox='0 0 200 60' ...>...</svg>", 'option_a'/'option_b'/'option_c'/'option_d': "<svg viewBox='0 0 50 50' ...>...</svg>".
+ONLY output questions and options. NO explanations or hints.
+Output format: {{"questions": [{{"q_num": 26, "category": "IQ", "sub_syllabus": "2.1 Reasoning", "exam_source": "PSC Model", "is_figure_option": 0, "figure_svg": null, "question_text": "...", "option_a": "...", "option_b": "...", "option_c": "...", "option_d": "...", "correct_option": "A"}}]}}""",
 
-        # Batch 3: IQ Verbal & Numerical Q26-42 (17 Qs)
-        f"""Generate 17 Aptitude MCQs (Q26 to Q42) in English:
-Q26-34: Logical reasoning (series, direction, coding, Venn). Q35-42: Numerical reasoning (ratio, time/work, percentage).
-'is_figure_option': 0, 'figure_svg': null.
-Output JSON format: {{"questions": [{{"q_num": 26, "category": "IQ", "exam_source": "PSC Model", "is_figure_option": 0, "figure_svg": null, "question_text": "...", "option_a": "...", "option_b": "...", "option_c": "...", "option_d": "...", "correct_option": "A"}}]}}""",
+        # Batch 3: 25 Technical Agriculture Part A (Q51 to Q75)
+        f"""Generate exactly 25 Technical Agri MCQs (Q51 to Q75) in English based on Nepal Government official sources:
+- Unit 1: History & Current Status (5 Qs, Q51-55): APP, Devolution, DoA/NARC timeline, Agriculture Census 2078 landholdings, GDP share.
+- Unit 2: Research, Extension & Education (5 Qs, Q56-60): NARC vision, AFU, CTEVT, FFS, AKC, T&V.
+- Unit 3: NRM, Environment, Climate & DRM (10 Qs, Q61-70): IPNM, IPM, GAP, Organic certification (PGS), NAPA/LAPA, Crop insurance (80% premium subsidy).
+- Unit 4: Policies (5 Qs, Q71-75): Constitution Art 36, 16th Plan agri goals, ADS (2015-2035) 4 pillars & VADEP.
+{avoid_snippet}
+ONLY output questions and options. NO explanations or hints.
+Output format: {{"questions": [{{"q_num": 51, "category": "Agri", "sub_syllabus": "Technical Agri", "exam_source": "Koshi PSC", "is_figure_option": 0, "figure_svg": null, "question_text": "...", "option_a": "...", "option_b": "...", "option_c": "...", "option_d": "...", "correct_option": "A"}}]}}""",
 
-        # Batch 4: IQ Spatial Q43-50 (8 Qs with compact SVGs)
-        f"""Generate 8 Spatial Reasoning MCQs (Q43 to Q50) with compact inline SVGs:
-Figure series, pattern completion, matrix, cube unfolding.
-'is_figure_option': 1, 'figure_svg': "<svg viewBox='0 0 200 60' ...>...</svg>", 'option_a'/'option_b'/'option_c'/'option_d': "<svg viewBox='0 0 50 50' ...>...</svg>".
-Output JSON format: {{"questions": [{{"q_num": 43, "category": "IQ", "exam_source": "PSC Spatial", "is_figure_option": 1, "figure_svg": "...", "option_a": "...", "option_b": "...", "option_c": "...", "option_d": "...", "correct_option": "A"}}]}}""",
-
-        # Batch 5: Technical Agri Part A Q51-75 (25 Qs)
-        f"""Generate 25 Technical Agri MCQs (Q51 to Q75) in English:
-Topics: APP, NARC vision, Extension (FFS, AKC), NAPA/LAPA, Crop insurance (80% subsidy), Organic farming, ADS 4 pillars, WTO SPS. {avoid_snippet}
-'is_figure_option': 0, 'figure_svg': null.
-Output JSON format: {{"questions": [{{"q_num": 51, "category": "Agri", "exam_source": "Koshi PSC", "is_figure_option": 0, "figure_svg": null, "question_text": "...", "option_a": "...", "option_b": "...", "option_c": "...", "option_d": "...", "correct_option": "A"}}]}}""",
-
-        # Batch 6: Technical Agri Part B Q76-100 (25 Qs)
-        f"""Generate 25 Technical Agri MCQs (Q76 to Q100) in English:
-Topics: Seeds Act 2045, Plant Protection Act 2064, Pesticide Act 2076 (26 banned list), Seed classes/isolation, Soil pH & IPNS, Fall Armyworm, Late blight, LER, RCBD. {avoid_snippet}
-'is_figure_option': 0, 'figure_svg': null.
-Output JSON format: {{"questions": [{{"q_num": 76, "category": "Agri", "exam_source": "Lumbini PSC", "is_figure_option": 0, "figure_svg": null, "question_text": "...", "option_a": "...", "option_b": "...", "option_c": "...", "option_d": "...", "correct_option": "A"}}]}}"""
+        # Batch 4: 25 Technical Agriculture Part B (Q76 to Q100)
+        f"""Generate exactly 25 Technical Agri MCQs (Q76 to Q100) in English based on Nepal Government official acts:
+- Unit 4: Acts & Global Trade (5 Qs, Q76-80): Seeds Act 2045 & Rules 2069, Plant Protection Act 2064, Pesticide Management Act 2076 (26 banned list), Food Sovereignty Act 2076, WTO SPS.
+- Unit 5: Agricultural Technology & Management (20 Qs, Q81-100):
+  * Seed certification classes (Foundation White, Breeder Yellow, Certified Blue), isolation distances
+  * Soil pH, lime requirement formula, essential nutrient mobility (N, P, K mobile)
+  * Plant protection: Fall Armyworm (inverted Y), Late blight, Clubroot, ETL
+  * Economics & research design: LER, price elasticity, RCBD (12 error df)
+{avoid_snippet}
+ONLY output questions and options. NO explanations or hints.
+Output format: {{"questions": [{{"q_num": 76, "category": "Agri", "sub_syllabus": "Technical Agri", "exam_source": "Bagmati PSC", "is_figure_option": 0, "figure_svg": null, "question_text": "...", "option_a": "...", "option_b": "...", "option_c": "...", "option_d": "...", "correct_option": "A"}}]}}"""
     ]
 
     all_100 = []
-    with ThreadPoolExecutor(max_workers=3) as executor:
-        futures = [executor.submit(fetch_mini_batch, prompt, client, active_model) for prompt in batches]
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        futures = [executor.submit(fetch_batch_questions, prompt, client, active_model) for prompt in batches]
         for f in as_completed(futures):
             all_100.extend(f.result())
 
     if not all_100:
-        raise ValueError("Failed to retrieve question batches. Please retry.")
+        raise ValueError("AI engine produced an empty response. Please retry.")
 
-    # Sort sequentially by question number
     all_100.sort(key=lambda x: x.get("q_num", 0))
 
     # Save to SQLite
@@ -527,24 +454,25 @@ def background_hint_worker(exam_id, api_key, active_model):
             chunk = rows[i:i+chunk_size]
             summaries = [f"Q{r[0]}: {r[1]} | Correct: ({r[6]}) | A:{r[2]} | B:{r[3]} | C:{r[4]} | D:{r[5]}" for r in chunk]
             
-            prompt = f"""For each question below, write a core concept explanation and explain why options A, B, C, D are correct or what they refer to:
+            prompt = f"""For each question below, provide the verified Government of Nepal explanation and detail why options A, B, C, D are correct or what they refer to:
 {chr(10).join(summaries)}
 
 Respond in pure JSON format:
 {{"hints": [
-  {{"q_num": {chunk[0][0]}, "explanation": "Core reason why correct option is right...", "option_hints": {{"A": "why A is...", "B": "why B is...", "C": "why C is...", "D": "why D is..."}}}}
+  {{"q_num": {chunk[0][0]}, "explanation": "Core Government verified concept...", "option_hints": {{"A": "why A is...", "B": "why B is...", "C": "why C is...", "D": "why D is..."}}}}
 ]}}"""
             try:
                 comp = client.chat.completions.create(
                     model=active_model,
                     messages=[
-                        {"role": "system", "content": "You are an agricultural professor. Respond with pure JSON only."},
+                        {"role": "system", "content": "You are an official Nepal PSC evaluator. Respond with pure JSON only."},
                         {"role": "user", "content": prompt}
                     ],
                     max_tokens=3500,
                     temperature=0.2
                 )
-                data = json.loads(re.sub(r'<think>.*?</think>', '', comp.choices[0].message.content, flags=re.DOTALL).strip().replace("```json", "").replace("```", ""))
+                clean_txt = re.sub(r'<think>.*?</think>', '', comp.choices[0].message.content, flags=re.DOTALL).strip().replace("```json", "").replace("```", "")
+                data = json.loads(clean_txt)
                 hint_list = data if isinstance(data, list) else data.get("hints", list(data.values())[0])
                 for h in hint_list:
                     cursor.execute(
@@ -582,7 +510,7 @@ menu = st.sidebar.radio(
     [
         "📝 Attempt 100-Question Exam",
         "📖 Review Exam & Option Hints",
-        "⚡ Generate Next Set (~2s)",
+        "⚡ Generate Next 100 Questions (~2s)",
         "📊 Score History & Analytics"
     ]
 )
@@ -597,7 +525,7 @@ if menu == "📝 Attempt 100-Question Exam":
         exams = conn.execute("SELECT * FROM exams ORDER BY set_number DESC, id DESC").fetchall()
 
     if not exams:
-        st.warning("No exams stored.")
+        st.info("No exam sets generated yet. Please visit the **'⚡ Generate Next 100 Questions (~2s)'** tab to compile Set #1.")
         st.stop()
 
     exam_map = {f"Set #{e['set_number']} ({e['exam_date']}) - {e['title']}": e['id'] for e in exams}
@@ -876,11 +804,11 @@ elif menu == "📖 Review Exam & Option Hints":
                     pass
 
 # =====================================================================
-# TAB 3: GENERATE NEXT SET (~2 SECONDS)
+# TAB 3: GENERATE NEXT 100 QUESTIONS (~2 SECONDS)
 # =====================================================================
-elif menu == "⚡ Generate Next Set (~2s)":
+elif menu == "⚡ Generate Next 100 Questions (~2s)":
     st.markdown('<div class="main-title">⚡ Instant Exam Creator & Next-Set Engine</div>', unsafe_allow_html=True)
-    st.caption("Generates 100 questions in ~2 seconds. Hints prepare silently in the background while you solve!")
+    st.caption("Zero hardcoded questions. 100 dynamic questions generated in ~2s while hints prepare in the background.")
 
     next_set = get_next_set_number()
     today_str = get_today_nepal_str()
@@ -894,16 +822,17 @@ elif menu == "⚡ Generate Next Set (~2s)":
         target_title = st.text_input("Exam Title:", value=f"Loksewa Krishi 7th Level Model Set #{target_set_num}")
 
     st.markdown("""
-    **Ultra-Fast Strategy:**
-    1. **Stage 1 (Now):** Generates 100 questions (25 GK + 25 IQ with SVGs + 50 Agri) in just **2 to 3 seconds**.
-    2. **Stage 2 (Background):** A silent background thread writes explanations and all 4-option hints **while you are solving the exam**.
-    3. Zero waiting time!
+    **Syllabus Blueprint:**
+    - **25 GK Questions (Nepali Unicode):** Census 2078, Constitution, 16th Plan, Budgeting, Civil Service Act, UNO/BIMSTEC.
+    - **25 IQ Questions:** 17 Verbal/Numerical + 8 Non-Verbal with native inline SVGs for question and options.
+    - **50 Technical Agriculture Questions:** Units 1 to 5 (APP, Extension, NAPA/LAPA, ADS, Seeds Act, Agronomy, Soil pH, Crop Protection).
+    - **Speed Strategy:** 100 questions generate in **~2 to 3 seconds**. All option hints prepare silently in the background while you solve the exam.
     """)
 
     if st.button("➡️ Generate 100 Questions Now (Instant Mode)", type="primary", use_container_width=True):
         api_key = get_groq_api_key()
         if not api_key:
-            st.error("GROQ_API_KEY was not found. Please set it in `.streamlit/secrets.toml` or your environment variables.")
+            st.error("GROQ_API_KEY was not found. Please configure it in `.streamlit/secrets.toml` or your environment variables.")
             st.stop()
 
         try:
@@ -912,7 +841,7 @@ elif menu == "⚡ Generate Next Set (~2s)":
             start_t = time.time()
 
             with st.spinner("Generating 100 questions (~2 to 3 seconds)..."):
-                new_id, total_q, used_model = generate_questions_fast(client, today_str, target_set_num, target_title)
+                new_id, total_q, used_model = generate_100_questions_fast(client, today_str, target_set_num, target_title)
 
             # Launch background worker immediately to prepare hints silently
             t = threading.Thread(target=background_hint_worker, args=(new_id, api_key, used_model), daemon=True)
@@ -940,7 +869,7 @@ elif menu == "📊 Score History & Analytics":
         ''').fetchall()
 
     if not attempts:
-        st.info("No exam attempts recorded yet. Attempt an exam first to view analytics.")
+        st.info("No exam attempts recorded yet. Generate and attempt an exam first to view analytics.")
         st.stop()
 
     df = pd.DataFrame([dict(a) for a in attempts])
