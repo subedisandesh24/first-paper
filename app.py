@@ -6,6 +6,7 @@ from datetime import datetime, timezone, timedelta
 import pandas as pd
 import os
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # =====================================================================
 # 1. TIMEZONE CONFIG (NEPAL TIME UTC+5:45) & PAGE SETUP
@@ -19,14 +20,14 @@ def get_today_nepal_str():
     return get_nepal_now().strftime("%Y-%m-%d")
 
 st.set_page_config(
-    page_title="Loksewa Agri 7th Level Portal",
+    page_title="Loksewa Krishi 7th Level Portal",
     page_icon="🌱",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
 # =====================================================================
-# 2. EYE-CATCHING CUSTOM CSS
+# 2. EYE-CATCHY CUSTOM CSS
 # =====================================================================
 CUSTOM_CSS = """
 <style>
@@ -144,7 +145,7 @@ st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
 DB_FILE = "loksewa_agri_7th.db"
 
 # =====================================================================
-# 3. DATABASE INITIALIZATION & MIGRATIONS
+# 3. DATABASE INITIALIZATION & REPETITION PREVENTION
 # =====================================================================
 def get_db():
     conn = sqlite3.connect(DB_FILE, check_same_thread=False)
@@ -249,40 +250,47 @@ def extract_and_parse_json(content):
                 return data
         except Exception:
             pass
-    raise ValueError("Could not parse valid JSON from AI completion.")
+    raise ValueError("Could not parse valid JSON from AI response.")
 
 # =====================================================================
-# 5. GROQ ENGINE (8 TOKEN-SAFE BATCHES STRICTLY PER SYLLABUS)
+# 5. FAST MULTI-THREADED 100-QUESTION ENGINE (LLAMA-3.1-8B-INSTANT)
 # =====================================================================
-VERIFIED_OPEN_MODELS = [
-    "llama-3.1-8b-instant",
-    "openai/gpt-oss-120b",
-    "openai/gpt-oss-20b",
-    "llama-3.3-70b-versatile"
-]
+# Fixed to the fastest, most reliable open production model on Groq
+AUTO_MODEL = "llama-3.1-8b-instant"
 
-def get_available_groq_models(client):
-    try:
-        m_list = client.models.list()
-        raw_ids = [m.id for m in m_list.data]
-        valid = [m for m in VERIFIED_OPEN_MODELS if m in raw_ids]
-        return valid if valid else ["llama-3.1-8b-instant", "openai/gpt-oss-120b", "openai/gpt-oss-20b"]
-    except Exception:
-        return ["llama-3.1-8b-instant", "openai/gpt-oss-120b", "openai/gpt-oss-20b"]
+def fetch_single_batch(batch_idx, batch_data, client, avoid_snippet):
+    prompt = batch_data["prompt"].replace("{{avoid_snippet}}", avoid_snippet)
+    for attempt in range(2):
+        try:
+            comp = client.chat.completions.create(
+                model=AUTO_MODEL,
+                messages=[{"role": "user", "content": prompt}],
+                response_format={"type": "json_object"},
+                max_tokens=4096,
+                temperature=0.2
+            )
+            content = comp.choices[0].message.content
+            q_list = extract_and_parse_json(content)
+            return batch_idx, q_list
+        except Exception as e:
+            if attempt == 1:
+                raise e
+            time.sleep(0.4)
+    return batch_idx, []
 
-def generate_full_100_exam(client, target_date_str, set_num, title_str, preferred_model="llama-3.1-8b-instant"):
+def generate_full_100_exam_parallel(client, target_date_str, set_num, title_str):
     past_stems = get_recent_question_stems(limit=200)
     avoid_snippet = ("\nCRITICAL: DO NOT repeat any of these past question stems:\n- " + "\n- ".join(past_stems[:35])) if past_stems else ""
 
     batches = [
-        # Batch 1: GK Q1-Q13
+        # Batch 0: GK Q1-Q13
         {
             "start": 1, "end": 13,
             "prompt": f"""
             You are Nepal Public Service Commission (Loksewa Aayog) Chief Examiner for Agri 7th Level.
             Generate exactly 13 General Awareness MCQs (numbered 1 to 13).
             Topics: Geography (Census 2078), Natural resources, Constitution of Nepal (Part 1-5, Art 36, Schedules 5-9).
-            {avoid_snippet}
+            {{{{avoid_snippet}}}}
             Language: Nepali (Unicode). 'is_figure_option': 0, 'figure_svg': null.
             Exam source tags: Federal PSC 2080, Bagmati PSC 2081, Koshi PSC 2080, Lumbini PSC 2079, CARE Bagbazar Model.
             In 'option_hints', describe why every option (A, B, C, D) is correct or what it refers to.
@@ -293,20 +301,20 @@ def generate_full_100_exam(client, target_date_str, set_num, title_str, preferre
             ]}}
             """
         },
-        # Batch 2: GK Q14-Q25
+        # Batch 1: GK Q14-Q25
         {
             "start": 14, "end": 25,
             "prompt": f"""
             Generate exactly 12 General Awareness MCQs (numbered 14 to 25) for Loksewa Agri 7th Level:
             Topics: 16th Periodic Plan targets, Civil Service Act 2049, POSDCORB, Budgeting, UNO, SAARC, BIMSTEC, Climate Change.
-            {avoid_snippet}
+            {{{{avoid_snippet}}}}
             Language: Nepali (Unicode). 'is_figure_option': 0, 'figure_svg': null.
             Exam sources: Gandaki PSC 2081, Federal PSC 2079, Agri360 Model.
             Describe all options (A, B, C, D) in 'option_hints'.
             Output format MUST BE a JSON object with key "questions" (numbered 14 to 25).
             """
         },
-        # Batch 3: IQ Verbal & Numerical Q26-Q42 (17 Qs)
+        # Batch 2: IQ Verbal & Numerical Q26-Q42 (17 Qs)
         {
             "start": 26, "end": 42,
             "prompt": f"""
@@ -318,7 +326,7 @@ def generate_full_100_exam(client, target_date_str, set_num, title_str, preferre
             Output format MUST BE a JSON object with key "questions" (numbered 26 to 42).
             """
         },
-        # Batch 4: IQ Spatial Reasoning Q43-Q50 (8 Qs with SVGs)
+        # Batch 3: IQ Spatial Reasoning Q43-Q50 (8 Qs with SVGs)
         {
             "start": 43, "end": 50,
             "prompt": f"""
@@ -332,7 +340,7 @@ def generate_full_100_exam(client, target_date_str, set_num, title_str, preferre
             Output format MUST BE a JSON object with key "questions" (numbered 43 to 50).
             """
         },
-        # Batch 5: Agri Part 1 Q51-Q62 (12 Qs)
+        # Batch 4: Agri Part 1 Q51-Q62 (12 Qs)
         {
             "start": 51, "end": 62,
             "prompt": f"""
@@ -340,13 +348,13 @@ def generate_full_100_exam(client, target_date_str, set_num, title_str, preferre
             - 1. History & Current Status (5 Qs, Q51-Q55): APP, Devolution, Research history, AgGDP.
             - 2. Research, Extension & Education (5 Qs, Q56-Q60): NARC vision, AFU, FFS, AKC, T&V.
             - 3. Natural Resources & Climate (2 Qs, Q61-Q62): Agro-biodiversity, NAPA/LAPA.
-            {avoid_snippet}
+            {{{{avoid_snippet}}}}
             Exam sources: Koshi PSC 2080, Bagmati PSC 2081, Sudurpashchim PSC 2079.
             Language: English. 'is_figure_option': 0. Explain all options in 'option_hints'.
             Output format MUST BE a JSON object with key "questions" (numbered 51 to 62).
             """
         },
-        # Batch 6: Agri Part 2 Q63-Q75 (13 Qs)
+        # Batch 5: Agri Part 2 Q63-Q75 (13 Qs)
         {
             "start": 63, "end": 75,
             "prompt": f"""
@@ -357,7 +365,7 @@ def generate_full_100_exam(client, target_date_str, set_num, title_str, preferre
             Output format MUST BE a JSON object with key "questions" (numbered 63 to 75).
             """
         },
-        # Batch 7: Agri Part 3 Q76-Q87 (12 Qs)
+        # Batch 6: Agri Part 3 Q76-Q87 (12 Qs)
         {
             "start": 76, "end": 87,
             "prompt": f"""
@@ -368,7 +376,7 @@ def generate_full_100_exam(client, target_date_str, set_num, title_str, preferre
             Output format MUST BE a JSON object with key "questions" (numbered 76 to 87).
             """
         },
-        # Batch 8: Agri Part 4 Q88-Q100 (13 Qs)
+        # Batch 7: Agri Part 4 Q88-Q100 (13 Qs)
         {
             "start": 88, "end": 100,
             "prompt": f"""
@@ -380,47 +388,23 @@ def generate_full_100_exam(client, target_date_str, set_num, title_str, preferre
         }
     ]
 
-    candidate_models = [preferred_model, "llama-3.1-8b-instant", "openai/gpt-oss-120b", "openai/gpt-oss-20b"]
-    candidate_models = list(dict.fromkeys(candidate_models))
+    # Run batches concurrently using 4 workers for ~5-8 second generation
+    batch_results = {}
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        future_to_idx = {
+            executor.submit(fetch_single_batch, idx, b, client, avoid_snippet): idx 
+            for idx, b in enumerate(batches)
+        }
+        for future in as_completed(future_to_idx):
+            b_idx, q_list = future.result()
+            batch_results[b_idx] = q_list
 
+    # Assemble questions in sequential order (Q1 to Q100)
     all_100 = []
-    active_model = candidate_models[0]
+    for idx in range(len(batches)):
+        all_100.extend(batch_results.get(idx, []))
 
-    for b_idx, b in enumerate(batches):
-        success = False
-        last_err = None
-
-        for model_to_try in candidate_models:
-            for retry in range(2):
-                try:
-                    comp = client.chat.completions.create(
-                        model=model_to_try,
-                        messages=[{"role": "user", "content": b["prompt"]}],
-                        response_format={"type": "json_object"},
-                        max_tokens=4096,
-                        temperature=0.2
-                    )
-                    content = comp.choices[0].message.content
-                    q_list = extract_and_parse_json(content)
-                    all_100.extend(q_list)
-                    active_model = model_to_try
-                    success = True
-                    break
-                except Exception as e:
-                    last_err = e
-                    err_msg = str(e).lower()
-                    if any(x in err_msg for x in ["terms", "404", "model_not_found", "model_terms_required"]):
-                        break
-                    time.sleep(0.5)
-            if success:
-                break
-
-        if not success:
-            raise RuntimeError(f"Failed to generate batch {b_idx + 1} ({b['start']}-{b['end']}). Error: {last_err}")
-            
-        time.sleep(0.2)
-
-    # Save to SQLite
+    # Save to SQLite Database
     with get_db() as conn:
         cursor = conn.cursor()
         cursor.execute(
@@ -444,10 +428,10 @@ def generate_full_100_exam(client, target_date_str, set_num, title_str, preferre
             ))
         conn.commit()
 
-    return exam_id, len(all_100), active_model
+    return exam_id, len(all_100)
 
 # =====================================================================
-# 6. SIDEBAR NAVIGATION
+# 6. SIDEBAR NAVIGATION & TIME DISPLAY
 # =====================================================================
 st.sidebar.markdown("<h2 style='color:#10b981; margin-bottom:0;'>🌱 AgriLoksewa 7th</h2>", unsafe_allow_html=True)
 st.sidebar.caption("Nepal Krishi Sewa (Gazetted 3rd Class / 7th Level)")
@@ -461,7 +445,7 @@ menu = st.sidebar.radio(
     [
         "📝 Attempt 100-Question Exam",
         "📖 Review Exam & Option Hints",
-        "⚡ Generate Next Set / Instant Creator",
+        "⚡ Generate Next Set (Fast Engine)",
         "📊 Score History & Analytics"
     ]
 )
@@ -477,7 +461,7 @@ if menu == "📝 Attempt 100-Question Exam":
         exams = conn.execute("SELECT * FROM exams ORDER BY set_number DESC, id DESC").fetchall()
 
     if not exams:
-        st.warning("⚠️ No exams in database yet. Please go to the '⚡ Generate Next Set' tab to create Set #1!")
+        st.warning("⚠️ No exams in database yet. Please go to the '⚡ Generate Next Set' tab to create Set #1 in seconds!")
         st.stop()
 
     exam_map = {f"Set #{e['set_number']} ({e['exam_date']}) - {e['title']}": e['id'] for e in exams}
@@ -500,7 +484,7 @@ if menu == "📝 Attempt 100-Question Exam":
     # Blueprint Statistics Bar
     c1, c2, c3, c4 = st.columns(4)
     c1.markdown("<div style='background:#f1f5f9; padding:10px; border-radius:8px; text-align:center;'><b>Total Questions:</b> 100</div>", unsafe_allow_html=True)
-    c2.markdown("<div style='background:#fef3c7; padding:10px; border-radius:8px; text-align:center;'><b>Time:</b> 90 Minutes</div>", unsafe_allow_html=True)
+    c2.markdown("<div style='background:#fef3c7; padding:10px; border-radius:8px; text-align:center;'><b>Time Allowed:</b> 90 Minutes</div>", unsafe_allow_html=True)
     c3.markdown("<div style='background:#fee2e2; padding:10px; border-radius:8px; text-align:center;'><b>Negative Mark:</b> -0.2 (20%)</div>", unsafe_allow_html=True)
     c4.markdown("<div style='background:#ecfdf5; padding:10px; border-radius:8px; text-align:center;'><b>Pass Mark:</b> 40.0</div>", unsafe_allow_html=True)
     st.markdown("<br>", unsafe_allow_html=True)
@@ -743,34 +727,19 @@ elif menu == "📖 Review Exam & Option Hints":
                     pass
 
 # =====================================================================
-# TAB 3: GENERATE NEXT SET / INSTANT CREATOR
+# TAB 3: GENERATE NEXT SET (FAST MULTI-THREADED ENGINE)
 # =====================================================================
-elif menu == "⚡ Generate Next Set / Instant Creator":
+elif menu == "⚡ Generate Next Set (Fast Engine)":
     st.markdown('<div class="main-title">⚡ Instant Exam Creator & Next-Set Engine</div>', unsafe_allow_html=True)
-    st.caption("Generate a fresh, non-repeating 100-question paper strictly mapped to the Loksewa syllabus.")
+    st.caption("Auto-configured with Groq's high-speed engine (Llama-3.1-8B-Instant) via multi-threaded generation.")
 
     next_set = get_next_set_number()
     today_str = get_today_nepal_str()
 
-    st.info(f"Upcoming Set: **Set #{next_set}** | Date: **{today_str}**")
+    st.info(f"Upcoming Set: **Set #{next_set}** | Today's Date: **{today_str}**")
 
     saved_key = st.secrets.get("GROQ_API_KEY", os.environ.get("GROQ_API_KEY", ""))
-    api_key = st.text_input("Groq API Key:", type="password", value=saved_key)
-
-    selected_model = "llama-3.1-8b-instant"
-    if api_key:
-        try:
-            from groq import Groq
-            temp_client = Groq(api_key=api_key)
-            avail_models = get_available_groq_models(temp_client)
-            default_idx = 0
-            if "llama-3.1-8b-instant" in avail_models:
-                default_idx = avail_models.index("llama-3.1-8b-instant")
-            selected_model = st.selectbox("Select Active Production Groq Model:", avail_models, index=default_idx)
-        except Exception:
-            selected_model = st.selectbox("Select Active Production Groq Model:", ["llama-3.1-8b-instant", "openai/gpt-oss-120b", "openai/gpt-oss-20b"])
-    else:
-        st.caption("Enter your Groq API key above to load available models.")
+    api_key = st.text_input("Groq API Key:", type="password", value=saved_key, help="Enter your Groq key once; you can also store it in secrets.toml")
 
     colA, colB = st.columns(2)
     with colA:
@@ -779,15 +748,15 @@ elif menu == "⚡ Generate Next Set / Instant Creator":
         target_title = st.text_input("Exam Title:", value=f"Loksewa Krishi 7th Level Model Set #{target_set_num}")
 
     st.markdown("""
-    **What this generator guarantees:**
+    **Guaranteed Syllabus Standards:**
     - **25 GK Questions:** Nepali Unicode, Census 2078, Constitution, 16th Plan, Budgeting, Civil Service Act.
     - **25 IQ Questions:** 17 Verbal/Numerical + 8 Non-Verbal with native SVG Problem Figures and SVG Option Figures.
     - **50 Technical Agriculture Questions:** 5 History/Status, 5 Research/Extension, 10 Natural Resources/Climate/DRM, 10 Legislations/Trade, 20 Agri Technology & Management.
-    - Hints detailing why every option (A, B, C, D) is correct or incorrect.
-    - Excludes previously asked question stems to eliminate repetition.
+    - Detailed hints for **all 4 options (A, B, C, D)** on every question.
+    - Automatically avoids questions from previous sets in the database.
     """)
 
-    if st.button("➡️ Generate Next Non-Repeating Exam Set", type="primary", use_container_width=True):
+    if st.button("➡️ Generate 100-Question Exam Set (Fast Mode)", type="primary", use_container_width=True):
         if not api_key:
             st.error("Please enter a valid Groq API Key.")
             st.stop()
@@ -795,15 +764,17 @@ elif menu == "⚡ Generate Next Set / Instant Creator":
         try:
             from groq import Groq
             client = Groq(api_key=api_key)
-            prog = st.progress(0, text="Checking database to exclude past questions...")
+            prog = st.progress(0, text="Generating all 100 questions concurrently...")
 
-            with st.spinner(f"Generating Set #{target_set_num} across 8 token-safe mini-batches using '{selected_model}'..."):
-                prog.progress(15, text="Generating GK (Q1-Q25)...")
-                new_id, total_q, used_model = generate_full_100_exam(client, today_str, target_set_num, target_title, selected_model)
+            start_t = time.time()
+            with st.spinner(f"Generating Set #{target_set_num} in parallel (~5 to 8 seconds)..."):
+                prog.progress(40, text="Processing 8 syllabus batches in parallel...")
+                new_id, total_q = generate_full_100_exam_parallel(client, today_str, target_set_num, target_title)
                 prog.progress(100, text="Complete!")
 
-            st.success(f"🎉 Successfully generated Set #{target_set_num} with {total_q} questions using `{used_model}`!")
-            st.info("Switch to the **'📝 Attempt 100-Question Exam'** tab to take the test now!")
+            elapsed = round(time.time() - start_t, 1)
+            st.success(f"🎉 Generated Set #{target_set_num} with {total_q} questions in only **{elapsed} seconds**!")
+            st.info("Head to the **'📝 Attempt 100-Question Exam'** tab to start your test!")
         except Exception as e:
             st.error(f"Generation error: {e}")
 
