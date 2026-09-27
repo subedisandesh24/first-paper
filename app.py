@@ -2,6 +2,7 @@ import streamlit as st
 import sqlite3
 import json
 import re
+import threading
 from datetime import datetime, timezone, timedelta
 import pandas as pd
 import os
@@ -137,9 +138,9 @@ CUSTOM_CSS = """
     .option-explanation-pill {
         background: #ffffff;
         border: 1px dashed #cbd5e1;
-        border-radius: 8px;
+        border-radius: 6px;
         padding: 8px 12px;
-        margin: 6px 0;
+        margin: 5px 0;
         font-size: 0.88rem;
         color: #334155;
     }
@@ -150,7 +151,7 @@ st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
 DB_FILE = "loksewa_agri_7th.db"
 
 # =====================================================================
-# 3. SILENT API KEY RESOLVER (HIDDEN FROM UI)
+# 3. SILENT API KEY RESOLVER (NEVER EXPOSED IN UI)
 # =====================================================================
 def get_groq_api_key():
     return st.secrets.get("GROQ_API_KEY", os.environ.get("GROQ_API_KEY", ""))
@@ -226,12 +227,16 @@ def init_db():
 
 init_db()
 
+def get_total_exams_count():
+    with get_db() as conn:
+        return conn.execute("SELECT COUNT(*) FROM exams").fetchone()[0]
+
 def get_next_set_number():
     with get_db() as conn:
         val = conn.execute("SELECT MAX(set_number) FROM exams").fetchone()[0]
         return (val + 1) if val else 1
 
-def get_recent_stems(limit=60):
+def get_recent_stems(limit=80):
     with get_db() as conn:
         rows = conn.execute("SELECT question_text FROM questions ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
         return [r[0][:40] for r in rows if r[0]]
@@ -321,9 +326,9 @@ def extract_hints_dict(q, correct_opt, explanation):
     for k in ["A", "B", "C", "D"]:
         if k not in hints_dict or not hints_dict[k]:
             if k == correct_opt:
-                hints_dict[k] = explanation if explanation else "Verified correct option as per Nepal Government laws/standards."
+                hints_dict[k] = explanation if explanation else "Verified correct option as per Nepal Government laws and standards."
             else:
-                hints_dict[k] = f"Incorrect for this stem. This alternative refers to a different statutory provision, benchmark, or distractor."
+                hints_dict[k] = f"This alternative is incorrect for this stem. It refers to another statutory provision, standard, or distractor."
 
     return hints_dict
 
@@ -358,7 +363,6 @@ def extract_and_parse_json(content):
         except Exception:
             pass
 
-    # Salvage harvester
     q_pattern = re.compile(r'\{\s*"q_num"[\s\S]*?"question_text"[\s\S]*?"correct_option"\s*:\s*"[A-D]"[\s\S]*?\}')
     recovered = []
     for match in q_pattern.finditer(content):
@@ -371,7 +375,7 @@ def extract_and_parse_json(content):
     return recovered
 
 # =====================================================================
-# 8. EXACT 100-QUESTION DYNAMIC GENERATOR (STRICT SYLLABUS BREAKDOWN)
+# 8. EXACT 100-QUESTION COMPILER
 # =====================================================================
 def fetch_batch(prompt, client, active_model):
     for _ in range(2):
@@ -393,11 +397,10 @@ def fetch_batch(prompt, client, active_model):
     return []
 
 def generate_full_100_exam(client, target_date_str, set_num, title_str):
-    past_stems = get_recent_stems(limit=30)
-    avoid_snippet = ("Avoid stems: " + "; ".join(past_stems[:8])) if past_stems else ""
+    past_stems = get_recent_stems(limit=40)
+    avoid_snippet = ("Avoid stems: " + "; ".join(past_stems[:10])) if past_stems else ""
     active_model = get_best_active_model(client)
 
-    # 6 Focused batches strictly assembling 100 questions
     batches = [
         # Batch 1: GK Q1-13 (13 Qs in Nepali)
         f"""Generate exactly 13 General Awareness MCQs (numbered 1 to 13) for Nepal PSC Agri 7th in Nepali Unicode.
@@ -498,7 +501,51 @@ JSON Schema: {{"questions": [{{"q_num": 76, "category": "Agri", "sub_syllabus": 
     return exam_id, len(all_100), active_model
 
 # =====================================================================
-# 9. SIDEBAR NAVIGATION
+# 9. SILENT BUFFER WORKER (PRE-GENERATES UP TO 10 SETS IN BACKGROUND)
+# =====================================================================
+def is_buffer_thread_active():
+    for t in threading.enumerate():
+        if t.name == "LoksewaBufferWorker":
+            return True
+    return False
+
+def buffer_worker_loop(api_key, target_sets=10):
+    """Silently runs in background to compile up to 10 sets so the user never waits."""
+    try:
+        from groq import Groq
+        client = Groq(api_key=api_key)
+        while True:
+            conn = sqlite3.connect(DB_FILE, check_same_thread=False)
+            count = conn.execute("SELECT COUNT(*) FROM exams").fetchone()[0]
+            val = conn.execute("SELECT MAX(set_number) FROM exams").fetchone()[0]
+            conn.close()
+
+            if count >= target_sets:
+                break
+
+            next_s = (val + 1) if val else 1
+            t_str = get_today_nepal_str()
+            title = f"Loksewa Krishi 7th Level Model Set #{next_s}"
+            try:
+                generate_full_100_exam(client, t_str, next_s, title)
+            except Exception:
+                time.sleep(4)
+
+            time.sleep(3) # Polite interval between sets
+    except Exception:
+        pass
+
+def trigger_background_buffering():
+    key = get_groq_api_key()
+    if key and not is_buffer_thread_active():
+        t = threading.Thread(target=buffer_worker_loop, args=(key, 10), name="LoksewaBufferWorker", daemon=True)
+        t.start()
+
+# Automatically kick off buffering when app starts
+trigger_background_buffering()
+
+# =====================================================================
+# 10. SIDEBAR NAVIGATION & REAL-TIME CLOCK
 # =====================================================================
 st.sidebar.markdown("<h2 style='color:#10b981; margin-bottom:0;'>🌱 AgriLoksewa 7th</h2>", unsafe_allow_html=True)
 st.sidebar.caption("Nepal Krishi Sewa (Gazetted 3rd Class / 7th Level)")
@@ -506,11 +553,10 @@ st.sidebar.caption("Nepal Krishi Sewa (Gazetted 3rd Class / 7th Level)")
 nepal_clock = get_nepal_now().strftime("%Y-%m-%d | %I:%M %p")
 st.sidebar.markdown(f"<div class='clock-badge'>🕒 Nepal: {nepal_clock}</div>", unsafe_allow_html=True)
 
-active_key = get_groq_api_key()
-if active_key:
-    st.sidebar.success("🟢 AI Engine: Ready")
-else:
-    st.sidebar.warning("⚠️ GROQ_API_KEY not found in secrets.toml or environment.")
+# Live Sets Ready Counter
+total_cached = get_total_exams_count()
+buffer_status = "Pre-buffering active in background..." if is_buffer_thread_active() else "10 Sets Buffer Complete"
+st.sidebar.info(f"📦 **Ready Sets in System:** {total_cached} / 10\n\n_{buffer_status}_")
 
 st.sidebar.divider()
 
@@ -519,7 +565,7 @@ menu = st.sidebar.radio(
     [
         "📝 Attempt 100-Question Exam",
         "📖 Review Exam & Option Hints",
-        "⚡ Generate 100 Questions Set",
+        "⚡ Instant Next Set (0s Wait)",
         "📊 Score History & Analytics"
     ]
 )
@@ -531,20 +577,22 @@ if menu == "📝 Attempt 100-Question Exam":
     st.markdown('<div class="main-title">📝 100-Question Model Examination</div>', unsafe_allow_html=True)
 
     with get_db() as conn:
-        exams = conn.execute("SELECT * FROM exams ORDER BY set_number DESC, id DESC").fetchall()
+        exams = conn.execute("SELECT * FROM exams ORDER BY set_number ASC, id ASC").fetchall()
 
     if not exams:
-        st.info("No exam sets found. Click below to generate Set #1 (100 Questions) immediately!")
-        if st.button("🚀 Generate Set #1 Now", type="primary"):
-            api_key = get_groq_api_key()
-            if not api_key:
-                st.error("Please configure GROQ_API_KEY in `.streamlit/secrets.toml` or environment.")
-            else:
-                from groq import Groq
-                c = Groq(api_key=api_key)
-                with st.spinner("Compiling Set #1 (100 Questions)..."):
-                    generate_full_100_exam(c, get_today_nepal_str(), 1, "Loksewa Krishi 7th Model Set #1")
-                st.rerun()
+        st.info("No exam sets compiled yet. Initializing your first 100-question set...")
+        api_key = get_groq_api_key()
+        if not api_key:
+            st.error("Please configure GROQ_API_KEY in `.streamlit/secrets.toml` or your environment variables.")
+            st.stop()
+
+        if st.button("🚀 Compile Set #1 Now", type="primary"):
+            from groq import Groq
+            c = Groq(api_key=api_key)
+            with st.spinner("Compiling Set #1 (100 Questions) strictly as per syllabus..."):
+                generate_full_100_exam(c, get_today_nepal_str(), 1, "Loksewa Krishi 7th Model Set #1")
+            trigger_background_buffering()
+            st.rerun()
         st.stop()
 
     exam_map = {f"Set #{e['set_number']} ({e['exam_date']}) - {e['title']} ({e['total_questions']} Qs)": e['id'] for e in exams}
@@ -825,51 +873,37 @@ elif menu == "📖 Review Exam & Option Hints":
                 """, unsafe_allow_html=True)
 
 # =====================================================================
-# TAB 3: GENERATE 100 QUESTIONS SET (FAST & COMPLETE)
+# TAB 3: INSTANT NEXT SET (0 SECONDS WAIT - PRE-BUFFERED)
 # =====================================================================
-elif menu == "⚡ Generate 100 Questions Set":
-    st.markdown('<div class="main-title">⚡ Dynamic 100-Question Exam Generator</div>', unsafe_allow_html=True)
-    st.caption("Assembles 100 questions strictly per the syllabus, with all options and 4-option hints included.")
+elif menu == "⚡ Instant Next Set (0s Wait)":
+    st.markdown('<div class="main-title">⚡ Instant Next Set Engine</div>', unsafe_allow_html=True)
+    st.caption("Automatic pre-buffering maintains up to 10 full sets in SQLite so you never wait for generation.")
 
-    next_set = get_next_set_number()
-    today_str = get_today_nepal_str()
+    with get_db() as conn:
+        all_exams = conn.execute("SELECT set_number, title, exam_date, total_questions FROM exams ORDER BY set_number ASC").fetchall()
 
-    st.info(f"Upcoming Set: **Set #{next_set}** | Today's Date: **{today_str}**")
+    total_avail = len(all_exams)
+    st.success(f"📦 Currently Available Sets in Local Storage: **{total_avail} / 10 Sets**")
 
-    colA, colB = st.columns(2)
-    with colA:
-        target_set_num = st.number_input("Set Number:", value=next_set, min_value=1, step=1)
-    with colB:
-        target_title = st.text_input("Exam Title:", value=f"Loksewa Krishi 7th Level Model Set #{target_set_num}")
+    # Display list of ready sets
+    df_sets = pd.DataFrame([dict(e) for e in all_exams])
+    if not df_sets.empty:
+        st.dataframe(df_sets, use_container_width=True)
 
-    st.markdown("""
-    **Guaranteed Syllabus Standards:**
-    - **25 GK Questions (Nepali Unicode):** Census 2078, Constitution, 16th Plan, Civil Service Act, Budgeting, UNO/BIMSTEC.
-    - **25 IQ Questions:** 17 Verbal/Numerical + 8 Spatial with native inline SVGs.
-    - **50 Technical Agriculture Questions:** Units 1 to 5 (APP, Extension, NAPA/LAPA, ADS, Seeds Act, 26 Banned Pesticides, Agronomy, Soil pH, Crop Protection).
-    - **All 4 Options Included:** Every question generates options A, B, C, D clearly.
-    - **All 4 Option Hints Included:** Review tab details why the correct answer is right and why the other three are wrong.
-    """)
+    st.markdown("---")
+    st.markdown("### 🚀 Load Next Prepared Set")
 
-    if st.button("➡️ Generate 100 Questions Now", type="primary", use_container_width=True):
-        api_key = get_groq_api_key()
-        if not api_key:
-            st.error("GROQ_API_KEY was not found. Please set it in `.streamlit/secrets.toml` or environment variables.")
-            st.stop()
-
-        try:
-            from groq import Groq
-            client = Groq(api_key=api_key)
-            start_t = time.time()
-
-            with st.spinner(f"Compiling exactly 100 questions for Set #{target_set_num}..."):
-                new_id, total_q, used_model = generate_full_100_exam(client, today_str, target_set_num, target_title)
-
-            elapsed = round(time.time() - start_t, 1)
-            st.success(f"🎉 Successfully generated Set #{target_set_num} with all {total_q} questions via `{used_model}` in {elapsed}s!")
-            st.info("Switch to the **'📝 Attempt 100-Question Exam'** tab to start solving your paper!")
-        except Exception as e:
-            st.error(f"Generation error: {e}")
+    if total_avail >= 1:
+        st.info("💡 Sets are pre-compiled and buffered in the background while you study. Select any ready set directly in the **'📝 Attempt 100-Question Exam'** tab with **0 seconds wait time**.")
+    
+    if total_avail < 10:
+        if is_buffer_thread_active():
+            st.info("⏳ Background worker is currently compiling additional sets up to Set #10. Check back shortly to see more sets added.")
+        else:
+            st.caption("Buffer worker is idle. You can trigger background compilation below:")
+            if st.button("🔄 Resume Background Compilation to 10 Sets", type="primary"):
+                trigger_background_buffering()
+                st.success("Background worker started. It will continue adding sets up to 10 silently.")
 
 # =====================================================================
 # TAB 4: SCORE HISTORY & ANALYTICS
