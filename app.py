@@ -27,7 +27,7 @@ st.set_page_config(
 )
 
 # =====================================================================
-# 2. EYE-CATCHY CUSTOM CSS & LIVE TIMER BANNER
+# 2. EYE-CATCHY CUSTOM CSS & TOP EXAM BAR
 # =====================================================================
 CUSTOM_CSS = """
 <style>
@@ -150,7 +150,14 @@ st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
 DB_FILE = "loksewa_agri_7th.db"
 
 # =====================================================================
-# 3. DATABASE INITIALIZATION & INSTANT SEED (SET #1 READY)
+# 3. SILENT API KEY RESOLVER (HIDDEN FROM UI)
+# =====================================================================
+def get_groq_api_key():
+    """Silently retrieves the API key without showing it in the UI."""
+    return st.secrets.get("GROQ_API_KEY", os.environ.get("GROQ_API_KEY", ""))
+
+# =====================================================================
+# 4. DATABASE INITIALIZATION & INSTANT SEED (SET #1 READY)
 # =====================================================================
 def get_db():
     conn = sqlite3.connect(DB_FILE, check_same_thread=False)
@@ -179,7 +186,6 @@ def seed_instant_exam_set_1(conn):
     )
     exam_id = cursor.lastrowid
 
-    # 100 Sample questions pre-loaded for immediate solving
     records = []
     # 25 GK
     for i in range(1, 26):
@@ -195,7 +201,7 @@ def seed_instant_exam_set_1(conn):
     for i in range(26, 43):
         records.append((
             i, "IQ", "Logical & Numerical", "PSC Model", 0,
-            f"Aptitude Question #{i}: In an agricultural data progression, determine the missing value in sequence #{i}?",
+            f"Aptitude Question #{i}: In an agricultural production series, determine the missing value in sequence #{i}?",
             None, "36 units", "42 units", "48 units", "54 units",
             "B", "Calculated using standard arithmetic difference and ratio balance.",
             json.dumps({"A": "Lower boundary deviation", "B": "Mathematically accurate value (CORRECT)", "C": "Upper boundary deviation", "D": "Unscaled sum"})
@@ -210,10 +216,10 @@ def seed_instant_exam_set_1(conn):
     for i in range(43, 51):
         records.append((
             i, "IQ", "Spatial Reasoning", "Federal PSC Spatial", 1,
-            f"Spatial Problem #{i}: Which figure completes the rotational and element-addition sequence for Step 4?",
+            f"Spatial Problem #{i}: Which figure completes the rotational sequence for Step 4?",
             svg_q, svg_a, svg_b, svg_c, svg_d,
             "A", "The pointer rotates 90 degrees clockwise at each step, while peripheral dots increase sequentially.",
-            json.dumps({"A": "Points left (270 deg) with 2 peripheral dots (CORRECT)", "B": "Points up (360 deg)", "C": "Displaced origin hub", "D": "Points right (step 2 position)"})
+            json.dumps({"A": "Points left (270 deg) with 2 dots (CORRECT)", "B": "Points up (360 deg)", "C": "Displaced origin hub", "D": "Points right (step 2 position)"})
         ))
 
     # 50 Agriculture Technical
@@ -299,7 +305,49 @@ def get_recent_stems(limit=100):
         return [r[0][:40] for r in rows if r[0]]
 
 # =====================================================================
-# 4. FAST JSON PARSER
+# 5. DYNAMIC MODEL PROBE (PREVENTS ALL 404 & 400 ERRORS)
+# =====================================================================
+def get_best_active_model(client):
+    """Probes your Groq account to find the fastest active model without terms restrictions."""
+    if "active_groq_model" in st.session_state and st.session_state["active_groq_model"]:
+        return st.session_state["active_groq_model"]
+
+    # Priority order on Groq
+    candidate_order = [
+        "openai/gpt-oss-20b",
+        "openai/gpt-oss-120b",
+        "llama-3.1-8b-instant",
+        "llama-3.3-70b-versatile",
+        "mixtral-8x7b-32768",
+        "gemma2-9b-it"
+    ]
+
+    try:
+        active_models = client.models.list().data
+        available_ids = [
+            m.id for m in active_models
+            if not any(x in m.id.lower() for x in ["whisper", "embed", "guard", "vision", "canopylabs", "orpheus"])
+        ]
+        priority_queue = [m for m in candidate_order if m in available_ids] + [m for m in available_ids if m not in candidate_order]
+    except Exception:
+        priority_queue = candidate_order
+
+    for model_id in priority_queue:
+        try:
+            client.chat.completions.create(
+                model=model_id,
+                messages=[{"role": "user", "content": "ping"}],
+                max_tokens=2
+            )
+            st.session_state["active_groq_model"] = model_id
+            return model_id
+        except Exception:
+            continue
+
+    return "openai/gpt-oss-20b"
+
+# =====================================================================
+# 6. FAST JSON PARSER
 # =====================================================================
 def extract_and_parse_json(content):
     content = content.strip()
@@ -325,14 +373,12 @@ def extract_and_parse_json(content):
     raise ValueError("Could not parse JSON.")
 
 # =====================================================================
-# 5. STAGE 1: ULTRA-FAST QUESTION GENERATOR (~2 TO 3 SECONDS)
+# 7. STAGE 1: ULTRA-FAST QUESTION GENERATOR (~2 TO 3 SECONDS)
 # =====================================================================
-# Only generates stems, options, and correct answers (NO heavy hints)
-MODEL_NAME = "llama-3.1-8b-instant"
-
 def generate_questions_fast(client, target_date_str, set_num, title_str):
     past_stems = get_recent_stems(limit=40)
     avoid_snippet = ("Avoid: " + "; ".join(past_stems[:10])) if past_stems else ""
+    active_model = get_best_active_model(client)
 
     batches = [
         # Batch 1: 25 GK
@@ -364,7 +410,7 @@ Return JSON: {{"questions": [{{"q_num": 76, "category": "Agri", "exam_source": "
     all_100 = []
     for b_prompt in batches:
         comp = client.chat.completions.create(
-            model=MODEL_NAME,
+            model=active_model,
             messages=[{"role": "user", "content": b_prompt}],
             response_format={"type": "json_object"},
             max_tokens=2200,
@@ -374,7 +420,7 @@ Return JSON: {{"questions": [{{"q_num": 76, "category": "Agri", "exam_source": "
         q_list = extract_and_parse_json(content)
         all_100.extend(q_list)
 
-    # Save immediately to SQLite
+    # Save to SQLite
     with get_db() as conn:
         cursor = conn.cursor()
         cursor.execute(
@@ -398,12 +444,12 @@ Return JSON: {{"questions": [{{"q_num": 76, "category": "Agri", "exam_source": "
             ))
         conn.commit()
 
-    return exam_id, len(all_100)
+    return exam_id, len(all_100), active_model
 
 # =====================================================================
-# 6. STAGE 2: BACKGROUND HINT WORKER (RUNS WHILE YOU SOLVE)
+# 8. STAGE 2: BACKGROUND HINT WORKER (RUNS WHILE YOU SOLVE)
 # =====================================================================
-def background_hint_worker(exam_id, api_key):
+def background_hint_worker(exam_id, api_key, active_model):
     """Silently generates comprehensive explanations & option hints while the student takes the exam."""
     try:
         from groq import Groq
@@ -411,20 +457,16 @@ def background_hint_worker(exam_id, api_key):
         conn = sqlite3.connect(DB_FILE, check_same_thread=False)
         cursor = conn.cursor()
 
-        # Fetch questions needing explanations
         cursor.execute("SELECT q_num, question_text, option_a, option_b, option_c, option_d, correct_option FROM questions WHERE exam_id = ? AND (explanation IS NULL OR explanation = '') ORDER BY q_num ASC", (exam_id,))
         rows = cursor.fetchall()
         if not rows:
             conn.close()
             return
 
-        # Process in chunks of 25 in background
         chunk_size = 25
         for i in range(0, len(rows), chunk_size):
             chunk = rows[i:i+chunk_size]
-            summaries = []
-            for r in chunk:
-                summaries.append(f"Q{r[0]}: {r[1]} | Correct: ({r[6]}) | A:{r[2]} | B:{r[3]} | C:{r[4]} | D:{r[5]}")
+            summaries = [f"Q{r[0]}: {r[1]} | Correct: ({r[6]}) | A:{r[2]} | B:{r[3]} | C:{r[4]} | D:{r[5]}" for r in chunk]
             
             prompt = f"""For each question below, provide a core explanation and explain why options A, B, C, D are correct or what they refer to:
 {chr(10).join(summaries)}
@@ -435,7 +477,7 @@ Return JSON:
 ]}}"""
             try:
                 comp = client.chat.completions.create(
-                    model=MODEL_NAME,
+                    model=active_model,
                     messages=[{"role": "user", "content": prompt}],
                     response_format={"type": "json_object"},
                     max_tokens=3500,
@@ -457,13 +499,21 @@ Return JSON:
         pass
 
 # =====================================================================
-# 7. SIDEBAR NAVIGATION
+# 9. SIDEBAR NAVIGATION
 # =====================================================================
 st.sidebar.markdown("<h2 style='color:#10b981; margin-bottom:0;'>🌱 AgriLoksewa 7th</h2>", unsafe_allow_html=True)
 st.sidebar.caption("Nepal Krishi Sewa (Gazetted 3rd Class / 7th Level)")
 
 nepal_clock = get_nepal_now().strftime("%Y-%m-%d | %I:%M %p")
 st.sidebar.markdown(f"<div class='clock-badge'>🕒 Nepal: {nepal_clock}</div>", unsafe_allow_html=True)
+
+# Silent API key status indicator
+active_key = get_groq_api_key()
+if active_key:
+    st.sidebar.success("🟢 AI Engine: Ready")
+else:
+    st.sidebar.warning("⚠️ GROQ_API_KEY not found in secrets/env.")
+
 st.sidebar.divider()
 
 menu = st.sidebar.radio(
@@ -769,15 +819,12 @@ elif menu == "📖 Review Exam & Option Hints":
 # =====================================================================
 elif menu == "⚡ Generate Next Set (~2s)":
     st.markdown('<div class="main-title">⚡ Instant Exam Creator & Next-Set Engine</div>', unsafe_allow_html=True)
-    st.caption("Generates questions in ~2 seconds; hints prepare silently in the background while you solve!")
+    st.caption("Generates 100 questions in ~2 seconds. Hints prepare silently in the background while you solve!")
 
     next_set = get_next_set_number()
     today_str = get_today_nepal_str()
 
     st.info(f"Upcoming Set: **Set #{next_set}** | Today's Date: **{today_str}**")
-
-    saved_key = st.secrets.get("GROQ_API_KEY", os.environ.get("GROQ_API_KEY", ""))
-    api_key = st.text_input("Groq API Key:", type="password", value=saved_key, help="Enter your Groq key once; you can also store it in secrets.toml")
 
     colA, colB = st.columns(2)
     with colA:
@@ -788,13 +835,14 @@ elif menu == "⚡ Generate Next Set (~2s)":
     st.markdown("""
     **Ultra-Fast Strategy:**
     1. **Stage 1 (Now):** Generates 100 questions (25 GK + 25 IQ with SVGs + 50 Agri) in just **2 to 3 seconds**.
-    2. **Stage 2 (Background):** A silent background thread writes the explanations and all 4-option hints **while you are solving the exam**.
+    2. **Stage 2 (Background):** A silent background thread writes explanations and all 4-option hints **while you are solving the exam**.
     3. Zero waiting time!
     """)
 
     if st.button("➡️ Generate 100 Questions Now (Instant Mode)", type="primary", use_container_width=True):
+        api_key = get_groq_api_key()
         if not api_key:
-            st.error("Please enter your Groq API Key.")
+            st.error("GROQ_API_KEY was not found. Please set it in `.streamlit/secrets.toml` or your environment variables.")
             st.stop()
 
         try:
@@ -803,14 +851,14 @@ elif menu == "⚡ Generate Next Set (~2s)":
             start_t = time.time()
 
             with st.spinner("Generating 100 questions (~2 to 3 seconds)..."):
-                new_id, total_q = generate_questions_fast(client, today_str, target_set_num, target_title)
+                new_id, total_q, used_model = generate_questions_fast(client, today_str, target_set_num, target_title)
 
             # Launch background worker immediately to prepare hints silently
-            t = threading.Thread(target=background_hint_worker, args=(new_id, api_key), daemon=True)
+            t = threading.Thread(target=background_hint_worker, args=(new_id, api_key, used_model), daemon=True)
             t.start()
 
             elapsed = round(time.time() - start_t, 1)
-            st.success(f"🎉 Set #{target_set_num} generated with {total_q} questions in only **{elapsed} seconds**!")
+            st.success(f"🎉 Set #{target_set_num} ({total_q} questions) generated via `{used_model}` in only **{elapsed} seconds**!")
             st.info("Head to the **'📝 Attempt 100-Question Exam'** tab now to start solving. Your option hints are already being prepared in the background!")
         except Exception as e:
             st.error(f"Generation error: {e}")
